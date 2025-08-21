@@ -197,14 +197,14 @@ def stages_summary(
 
 @app.post("/positions/create")
 def create_position(request: Request, name: str, department: str = "Software Engineering"):
-    require_api_key(request)  # API key check
+    require_api_key(request)
     _, drive = get_clients()
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
         raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
 
-    # Step 0: Ensure department folder exists under Hiring
+    # Step 0: Ensure department folder exists
     query = (
         f"mimeType='application/vnd.google-apps.folder' "
         f"and trashed=false and name='{department}' "
@@ -218,15 +218,30 @@ def create_position(request: Request, name: str, department: str = "Software Eng
     else:
         department_folder_id = create_folder(drive, department, HIRING_FOLDER_ID)
 
-    # Step 1: Create position folder inside department
+    # Step 1: Check if role folder already exists
+    query = (
+        f"mimeType='application/vnd.google-apps.folder' "
+        f"and trashed=false and name='{name}' "
+        f"and '{department_folder_id}' in parents"
+    )
+    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    if results.get("files"):
+        return {
+            "message": f"Role '{name}' already exists in {department}",
+            "positionId": results["files"][0]["id"],
+            "departmentFolderId": department_folder_id,
+            "created": False
+        }
+
+    # Step 2: Create role folder
     position_id = create_folder(drive, name, department_folder_id)
 
-    # Step 2: Create base subfolders
+    # Step 3: Subfolders (Role Description, Pre-screening, Candidate Stages)
     role_desc_id = create_folder(drive, "Role Description", position_id)
     prescreen_id = create_folder(drive, "Pre-screening questionnaire", position_id)
-    stages_id    = create_folder(drive, "Candidate Stages", position_id)
+    stages_id = create_folder(drive, "Candidate Stages", position_id)
 
-    # Step 3: Candidate stage subfolders per department
+    # Step 4: Candidate stage subfolders per department
     department_stages = {
         "Software Engineering": [
             "Manually Applied", "TA Sourced", "TA pre-screening scheduled",
@@ -273,10 +288,12 @@ def create_position(request: Request, name: str, department: str = "Software Eng
         create_folder(drive, stage, stages_id)
 
     return {
-        "message": f"Folder structure for '{name}' created successfully in {department}",
+        "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
-        "departmentFolderId": department_folder_id
+        "departmentFolderId": department_folder_id,
+        "created": True
     }
+
 
 @app.get("/positions/list") # End point that understands what department folders already exist under Hiring folder
 def list_positions(request: Request, department: Optional[str] = None):
