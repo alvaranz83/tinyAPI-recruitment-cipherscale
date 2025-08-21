@@ -82,7 +82,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
 def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
                  headerRow: int = 1, roleHeader: str = "Role"):
     require_api_key(request)
-    sheets, drive = get_clients()
+    sheets, drive, _ = get_clients()
 
     meta = drive.files().get(fileId=fileId, fields="id,name,mimeType,modifiedTime").execute()
     if meta.get("mimeType") != "application/vnd.google-apps.spreadsheet":
@@ -150,7 +150,7 @@ def stages_summary(
 ):
     # Reuse your existing API key check & Google clients
     require_api_key(request)
-    sheets, drive = get_clients()
+    sheets, drive, _ = get_clients()
 
     # Make sure it's a Google Sheet we can read
     meta = drive.files().get(fileId=fileId, fields="mimeType").execute()
@@ -229,7 +229,7 @@ def stages_summary(
 @app.post("/positions/create")
 def create_position(request: Request, name: str, department: str = "Software Engineering"):
     require_api_key(request)
-    _, drive = get_clients()
+    _, drive, _ = get_clients()
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
@@ -330,7 +330,7 @@ def create_position(request: Request, name: str, department: str = "Software Eng
 @app.get("/positions/list") # End point that understands what department folders already exist under Hiring folder
 def list_positions(request: Request, department: Optional[str] = None):
     require_api_key(request)
-    _, drive = get_clients()
+    _, drive, _ = get_clients()
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
