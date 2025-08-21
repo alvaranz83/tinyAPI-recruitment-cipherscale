@@ -47,6 +47,21 @@ def create_folder(drive, name: str, parent_id: str) -> str:
     folder = drive.files().create(body=metadata, fields="id").execute()
     return folder["id"]
 
+def upload_doc_to_drive(drive, folder_id: str, name: str, content: str) -> str:
+    """Upload a text file as Google Doc into the given folder"""
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [folder_id]
+    }
+    media = {
+        "mimeType": "text/plain",
+        "body": content
+    }
+    file = drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    return file["id"]
+
+
 @app.get("/roles/unique")
 def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
                  headerRow: int = 1, roleHeader: str = "Role"):
@@ -291,7 +306,8 @@ def create_position(request: Request, name: str, department: str = "Software Eng
         "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
         "departmentFolderId": department_folder_id,
-        "created": True
+        "created": True,
+        "nextAction": "Would you like me to also create the Job Description (JD), TA Screening Template, and Interview Scoring Rubric for this role?"
     }
 
 
@@ -328,4 +344,37 @@ def list_positions(request: Request, department: Optional[str] = None):
         "roles": roles,
         "exists": True
     }
+
+
+@app.post("/positions/createJD") # end point to create JD for new position crated on GPT
+def create_jd(request: Request, positionId: str, roleName: str):
+    require_api_key(request)
+    _, drive = get_clients()
+
+    content = f"**Job Description for {roleName}**\n\n[Insert JD template here]"
+    file_id = upload_doc_to_drive(drive, positionId, f"JD - {roleName}", content)
+
+    return {"message": f"JD created for {roleName}", "fileId": file_id}
+
+
+@app.post("/positions/createScreeningTemplate") # end point to create Screening template for new position created on GPT
+def create_screening(request: Request, positionId: str, roleName: str):
+    require_api_key(request)
+    _, drive = get_clients()
+
+    content = f"**Screening Template for {roleName}**\n\n[Insert Screening Qs here]"
+    file_id = upload_doc_to_drive(drive, positionId, f"Screening - {roleName}", content)
+
+    return {"message": f"Screening template created for {roleName}", "fileId": file_id}
+
+
+@app.post("/positions/createScoringModel")  # end point to create Screening template for new position created on GPT
+def create_scoring(request: Request, positionId: str, roleName: str):
+    require_api_key(request)
+    _, drive = get_clients()
+
+    content = f"**Scoring Rubric for {roleName}**\n\n[Insert scoring model here]"
+    file_id = upload_doc_to_drive(drive, positionId, f"Scoring Rubric - {roleName}", content)
+
+    return {"message": f"Scoring rubric created for {roleName}", "fileId": file_id}
 
