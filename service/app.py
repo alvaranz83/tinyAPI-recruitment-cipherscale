@@ -19,13 +19,8 @@ def get_clients():
     drive  = build("drive",  "v3", credentials=creds)
     return sheets, drive
 
-#def require_api_key(req: Request):
- #   if not API_KEY or req.headers.get("x-api-key") != API_KEY:
-  #      raise HTTPException(403, "Forbidden")
-
 def require_api_key(req: Request):
-    key = req.headers.get("x-api-key") or req.query_params.get("api_key")
-    if not API_KEY or key != API_KEY:
+    if not API_KEY or req.headers.get("x-api-key") != API_KEY:
         raise HTTPException(403, "Forbidden")
 
 def norm(s: Optional[str]) -> str:
