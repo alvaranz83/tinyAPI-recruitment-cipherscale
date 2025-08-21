@@ -9,15 +9,26 @@ API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
 
 app = FastAPI(title="Recruiting Sheet Insights")
 
+#def get_clients():
+ #   info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])  # paste SA JSON into this env var
+  #  creds = Credentials.from_service_account_info(info, scopes=[
+   #     "https://www.googleapis.com/auth/spreadsheets.readonly",
+    #    "https://www.googleapis.com/auth/drive.readonly",
+    #])
+    #sheets = build("sheets", "v4", credentials=creds)
+    #drive  = build("drive",  "v3", credentials=creds)
+    #return sheets, drive
+
 def get_clients():
-    info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])  # paste SA JSON into this env var
+    info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]) # paste SA JSON into this env var
     creds = Credentials.from_service_account_info(info, scopes=[
         "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive"  # full drive access
     ])
     sheets = build("sheets", "v4", credentials=creds)
     drive  = build("drive",  "v3", credentials=creds)
     return sheets, drive
+
 
 def require_api_key(req: Request):
     if not API_KEY or req.headers.get("x-api-key") != API_KEY:
@@ -25,6 +36,16 @@ def require_api_key(req: Request):
 
 def norm(s: Optional[str]) -> str:
     return (s or "").strip()
+
+def create_folder(drive, name: str, parent_id: str) -> str:
+    """Create a folder and return its Google Drive file ID"""
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    folder = drive.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
 
 @app.get("/roles/unique")
 def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
@@ -173,3 +194,40 @@ def stages_summary(
             "updatedAt": datetime.now(timezone.utc).isoformat(),
         },
     }
+
+@app.post("/positions/create")
+def create_position(request: Request, name: str):
+    require_api_key(request)  # API key check
+    _, drive = get_clients()
+
+    SOFTWARE_ENGINEERING_FOLDER_ID = os.environ.get("SOFTWARE_ENGINEERING_FOLDER_ID")
+    if not SOFTWARE_ENGINEERING_FOLDER_ID:
+        raise HTTPException(500, "SOFTWARE_ENGINEERING_FOLDER_ID env var not set")
+
+    # Step 1: Create position folder
+    position_id = create_folder(drive, name, SOFTWARE_ENGINEERING_FOLDER_ID)
+
+    # Step 2: Create base subfolders
+    role_desc_id = create_folder(drive, "Role Description", position_id)
+    prescreen_id = create_folder(drive, "Pre-screening questionnaire", position_id)
+    stages_id    = create_folder(drive, "Candidate Stages", position_id)
+
+    # Step 3: Candidate stages subfolders
+    stages = [
+        "Manually Applied", "TA Sourced", "TA pre-screening scheduled",
+        "TA pre-screening completed", "1st technical interview scheduled",
+        "1st technical interview completed", "2nd technical interview scheduled",
+        "2nd technical interview completed", "leadership-ceo chat",
+        "candidate dropped", "candidate rejected", "offer made",
+        "offer accepted", "contract sent", "contract signed off"
+    ]
+    for stage in stages:
+        create_folder(drive, stage, stages_id)
+
+    return {
+        "message": f"Folder structure for '{name}' created successfully",
+        "positionId": position_id
+    }
+
+
+
