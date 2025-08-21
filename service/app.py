@@ -9,26 +9,18 @@ API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
 
 app = FastAPI(title="Recruiting Sheet Insights")
 
-#def get_clients():
- #   info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])  # paste SA JSON into this env var
-  #  creds = Credentials.from_service_account_info(info, scopes=[
-   #     "https://www.googleapis.com/auth/spreadsheets.readonly",
-    #    "https://www.googleapis.com/auth/drive.readonly",
-    #])
-    #sheets = build("sheets", "v4", credentials=creds)
-    #drive  = build("drive",  "v3", credentials=creds)
-    #return sheets, drive
-
+# Below are helper functions
 def get_clients():
-    info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]) # paste SA JSON into this env var
+    info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
     creds = Credentials.from_service_account_info(info, scopes=[
         "https://www.googleapis.com/auth/spreadsheets.readonly",
-        "https://www.googleapis.com/auth/drive"  # full drive access
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/documents"  # add Docs scope
     ])
     sheets = build("sheets", "v4", credentials=creds)
     drive  = build("drive",  "v3", credentials=creds)
-    return sheets, drive
-
+    docs   = build("docs",   "v1", credentials=creds)
+    return sheets, drive, docs
 
 def require_api_key(req: Request):
     if not API_KEY or req.headers.get("x-api-key") != API_KEY:
@@ -61,6 +53,30 @@ def upload_doc_to_drive(drive, folder_id: str, name: str, content: str) -> str:
     file = drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
     return file["id"]
 
+def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
+    # Step 1: Create empty Google Doc
+    doc = docs.documents().create(body={"title": title}).execute()
+    doc_id = doc.get("documentId")
+
+    # Step 2: Insert content at beginning
+    requests = [
+        {"insertText": {"location": {"index": 1}, "text": content}}
+    ]
+    docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
+    # Step 3: Move into the correct Drive folder
+    file = drive.files().get(fileId=doc_id, fields="parents").execute()
+    prev_parents = ",".join(file.get("parents"))
+    drive.files().update(
+        fileId=doc_id,
+        addParents=folder_id,
+        removeParents=prev_parents,
+        fields="id, parents"
+    ).execute()
+
+    return doc_id
+
+#End of Helper Functions
 
 @app.get("/roles/unique")
 def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
@@ -345,36 +361,72 @@ def list_positions(request: Request, department: Optional[str] = None):
         "exists": True
     }
 
-
-@app.post("/positions/createJD") # end point to create JD for new position crated on GPT
+@app.post("/positions/createJD")
 def create_jd(request: Request, positionId: str, roleName: str):
     require_api_key(request)
-    _, drive = get_clients()
+    _, drive, docs = get_clients()
 
-    content = f"**Job Description for {roleName}**\n\n[Insert JD template here]"
-    file_id = upload_doc_to_drive(drive, positionId, f"JD - {roleName}", content)
+    content = f"""Job Description for {roleName}
 
-    return {"message": f"JD created for {roleName}", "fileId": file_id}
+Responsibilities:
+- Define and execute {roleName} strategies
+- Collaborate with cross-functional teams
+- Deliver measurable outcomes
 
+Qualifications:
+- Proven experience in {roleName}
+- Strong analytical, communication, and leadership skills
+"""
+    file_id = create_google_doc(docs, drive, positionId, f"JD - {roleName}", content)
+    return {
+        "message": f"JD created for {roleName}",
+        "fileId": file_id,
+        "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+    }
 
-@app.post("/positions/createScreeningTemplate") # end point to create Screening template for new position created on GPT
+@app.post("/positions/createScreeningTemplate")
 def create_screening(request: Request, positionId: str, roleName: str):
     require_api_key(request)
-    _, drive = get_clients()
+    _, drive, docs = get_clients()
 
-    content = f"**Screening Template for {roleName}**\n\n[Insert Screening Qs here]"
-    file_id = upload_doc_to_drive(drive, positionId, f"Screening - {roleName}", content)
+    content = f"""Screening Template for {roleName}
 
-    return {"message": f"Screening template created for {roleName}", "fileId": file_id}
+Candidate Name:
+Date:
 
+Questions:
+1. Why are you interested in this role?
+2. Describe your relevant skills and experience.
+3. What achievements best demonstrate your impact?
 
-@app.post("/positions/createScoringModel")  # end point to create Screening template for new position created on GPT
+Evaluator Notes:
+"""
+    file_id = create_google_doc(docs, drive, positionId, f"Screening Template - {roleName}", content)
+    return {
+        "message": f"Screening template created for {roleName}",
+        "fileId": file_id,
+        "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+    }
+
+@app.post("/positions/createScoringModel")
 def create_scoring(request: Request, positionId: str, roleName: str):
     require_api_key(request)
-    _, drive = get_clients()
+    _, drive, docs = get_clients()
 
-    content = f"**Scoring Rubric for {roleName}**\n\n[Insert scoring model here]"
-    file_id = upload_doc_to_drive(drive, positionId, f"Scoring Rubric - {roleName}", content)
+    content = f"""Scoring Rubric for {roleName}
 
-    return {"message": f"Scoring rubric created for {roleName}", "fileId": file_id}
+Criteria (1-5 each):
+- Role Expertise
+- Problem Solving
+- Communication
+- Culture Fit
+
+Total Score: ___ / 20
+"""
+    file_id = create_google_doc(docs, drive, positionId, f"Scoring Rubric - {roleName}", content)
+    return {
+        "message": f"Scoring rubric created for {roleName}",
+        "fileId": file_id,
+        "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+    }
 
