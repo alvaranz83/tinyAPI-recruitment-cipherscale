@@ -196,38 +196,86 @@ def stages_summary(
     }
 
 @app.post("/positions/create")
-def create_position(request: Request, name: str):
+def create_position(request: Request, name: str, department: str = "Software Engineering"):
     require_api_key(request)  # API key check
     _, drive = get_clients()
 
-    SOFTWARE_ENGINEERING_FOLDER_ID = os.environ.get("SOFTWARE_ENGINEERING_FOLDER_ID")
-    if not SOFTWARE_ENGINEERING_FOLDER_ID:
-        raise HTTPException(500, "SOFTWARE_ENGINEERING_FOLDER_ID env var not set")
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
 
-    # Step 1: Create position folder
-    position_id = create_folder(drive, name, SOFTWARE_ENGINEERING_FOLDER_ID)
+    # Step 0: Ensure department folder exists under Hiring
+    query = (
+        f"mimeType='application/vnd.google-apps.folder' "
+        f"and trashed=false and name='{department}' "
+        f"and '{HIRING_FOLDER_ID}' in parents"
+    )
+    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    items = results.get("files", [])
+
+    if items:
+        department_folder_id = items[0]["id"]
+    else:
+        department_folder_id = create_folder(drive, department, HIRING_FOLDER_ID)
+
+    # Step 1: Create position folder inside department
+    position_id = create_folder(drive, name, department_folder_id)
 
     # Step 2: Create base subfolders
     role_desc_id = create_folder(drive, "Role Description", position_id)
     prescreen_id = create_folder(drive, "Pre-screening questionnaire", position_id)
     stages_id    = create_folder(drive, "Candidate Stages", position_id)
 
-    # Step 3: Candidate stages subfolders
-    stages = [
-        "Manually Applied", "TA Sourced", "TA pre-screening scheduled",
-        "TA pre-screening completed", "1st technical interview scheduled",
-        "1st technical interview completed", "2nd technical interview scheduled",
-        "2nd technical interview completed", "leadership-ceo chat",
-        "candidate dropped", "candidate rejected", "offer made",
-        "offer accepted", "contract sent", "contract signed off"
-    ]
+    # Step 3: Candidate stage subfolders per department
+    department_stages = {
+        "Software Engineering": [
+            "Manually Applied", "TA Sourced", "TA pre-screening scheduled",
+            "TA pre-screening completed", "1st technical interview scheduled",
+            "1st technical interview completed", "2nd technical interview scheduled",
+            "2nd technical interview completed", "Leadership-CEO chat",
+            "Candidate dropped", "Candidate rejected", "Offer made",
+            "Offer accepted", "Contract sent", "Contract signed off"
+        ],
+        "Marketing": [
+            "Applied", "Recruiter screen", "Marketing skills assessment / portfolio review",
+            "Hiring Manager interview", "Team interview", "Leadership interview",
+            "Candidate dropped", "Candidate rejected", "Offer made",
+            "Offer accepted", "Contract sent", "Contract signed off"
+        ],
+        "Sales": [
+            "Applied", "Recruiter screen", "Hiring Manager interview",
+            "Role play / sales pitch simulation", "Panel interview", "Leadership interview",
+            "Candidate dropped", "Candidate rejected", "Offer made",
+            "Offer accepted", "Contract sent", "Contract signed off"
+        ],
+        "Product & Project Management": [
+            "Applied", "Recruiter screen", "Product case study / take-home assignment",
+            "Hiring Manager interview", "Cross-functional panel interview",
+            "Leadership interview", "Candidate dropped", "Candidate rejected",
+            "Offer made", "Offer accepted", "Contract sent", "Contract signed off"
+        ],
+        "HR & Recruitment": [
+            "Applied", "Recruiter screen", "HR knowledge/assessment",
+            "Hiring Manager interview", "Panel interview", "Leadership interview",
+            "Candidate dropped", "Candidate rejected", "Offer made",
+            "Offer accepted", "Contract sent", "Contract signed off"
+        ],
+        "Finance & Accounting": [
+            "Applied", "Recruiter screen", "Finance/Accounting technical test",
+            "Hiring Manager interview", "Team/peer interview", "Leadership interview",
+            "Candidate dropped", "Candidate rejected", "Offer made",
+            "Offer accepted", "Contract sent", "Contract signed off"
+        ]
+    }
+
+    stages = department_stages.get(department, department_stages["Software Engineering"])
     for stage in stages:
         create_folder(drive, stage, stages_id)
 
     return {
-        "message": f"Folder structure for '{name}' created successfully",
-        "positionId": position_id
+        "message": f"Folder structure for '{name}' created successfully in {department}",
+        "positionId": position_id,
+        "departmentFolderId": department_folder_id
     }
-
 
 
