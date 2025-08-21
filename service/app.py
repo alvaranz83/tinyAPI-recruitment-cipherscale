@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+erfrom fastapi import FastAPI, HTTPException, Request
 from datetime import datetime, timezone
 from typing import Optional, List
 import os, json
@@ -94,7 +94,7 @@ def stages_summary(
     fileId: str,
     sheetName: Optional[str] = None,
     headerRow: int = 1,
-    stageHeader: str = "Candidate Stage",
+    stageHeader: str = "Candidate Stage Helper",
 ):
     # Reuse your existing API key check & Google clients
     require_api_key(request)
