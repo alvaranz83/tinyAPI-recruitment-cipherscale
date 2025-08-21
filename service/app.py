@@ -361,12 +361,15 @@ def list_positions(request: Request, department: Optional[str] = None):
         "exists": True
     }
 
+from typing import Optional
+
 @app.post("/positions/createJD")
-def create_jd(request: Request, positionId: str, roleName: str):
+def create_jd(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
     _, drive, docs = get_clients()
 
-    content = f"""Job Description for {roleName}
+    if not content:
+        content = f"""Job Description for {roleName}
 
 Responsibilities:
 - Define and execute {roleName} strategies
@@ -377,6 +380,7 @@ Qualifications:
 - Proven experience in {roleName}
 - Strong analytical, communication, and leadership skills
 """
+
     file_id = create_google_doc(docs, drive, positionId, f"JD - {roleName}", content)
     return {
         "message": f"JD created for {roleName}",
@@ -384,12 +388,14 @@ Qualifications:
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
 
+
 @app.post("/positions/createScreeningTemplate")
-def create_screening(request: Request, positionId: str, roleName: str):
+def create_screening(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
     _, drive, docs = get_clients()
 
-    content = f"""Screening Template for {roleName}
+    if not content:
+        content = f"""Screening Template for {roleName}
 
 Candidate Name:
 Date:
@@ -401,6 +407,7 @@ Questions:
 
 Evaluator Notes:
 """
+
     file_id = create_google_doc(docs, drive, positionId, f"Screening Template - {roleName}", content)
     return {
         "message": f"Screening template created for {roleName}",
@@ -408,12 +415,14 @@ Evaluator Notes:
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
 
+
 @app.post("/positions/createScoringModel")
-def create_scoring(request: Request, positionId: str, roleName: str):
+def create_scoring(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
     _, drive, docs = get_clients()
 
-    content = f"""Scoring Rubric for {roleName}
+    if not content:
+        content = f"""Scoring Rubric for {roleName}
 
 Criteria (1-5 each):
 - Role Expertise
@@ -423,10 +432,10 @@ Criteria (1-5 each):
 
 Total Score: ___ / 20
 """
+
     file_id = create_google_doc(docs, drive, positionId, f"Scoring Rubric - {roleName}", content)
     return {
         "message": f"Scoring rubric created for {roleName}",
         "fileId": file_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
-
