@@ -278,4 +278,37 @@ def create_position(request: Request, name: str, department: str = "Software Eng
         "departmentFolderId": department_folder_id
     }
 
+@app.get("/positions/list") # End point that understands what department folders already exist under Hiring folder
+def list_positions(request: Request, department: Optional[str] = None):
+    require_api_key(request)
+    _, drive = get_clients()
+
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+
+    # If department specified, check inside it
+    parent_id = HIRING_FOLDER_ID
+    if department:
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{department}' "
+            f"and '{HIRING_FOLDER_ID}' in parents"
+        )
+        results = drive.files().list(q=query, fields="files(id,name)").execute()
+        items = results.get("files", [])
+        if not items:
+            return {"roles": [], "department": department, "exists": False}
+        parent_id = items[0]["id"]
+
+    # List folders under parent (roles or departments)
+    query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
+    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    roles = [{"id": f["id"], "name": f["name"]} for f in results.get("files", [])]
+
+    return {
+        "department": department or "Hiring",
+        "roles": roles,
+        "exists": True
+    }
 
