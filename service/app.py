@@ -5,6 +5,8 @@ import os, json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError # For user impersonation
+from pydantic import BaseModel
+
 
 IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
 DEFAULT_IMPERSONATION_SUBJECT = os.environ.get("DEFAULT_IMPERSONATION_SUBJECT")  # optional fallback
@@ -252,8 +254,8 @@ def stages_summary(
         },
     }
 
-@app.post("/positions/create")
-from pydantic import BaseModel
+
+
 
 class PositionRequest(BaseModel):
     name: str
