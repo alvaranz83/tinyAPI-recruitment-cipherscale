@@ -4,23 +4,67 @@ from typing import Optional, List
 import os, json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from google.auth.exceptions import RefreshError # For user impersonation
+
+IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
+DEFAULT_IMPERSONATION_SUBJECT = os.environ.get("DEFAULT_IMPERSONATION_SUBJECT")  # optional fallback
 
 API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
 
 app = FastAPI(title="Recruiting Sheet Insights")
 
 # Below are helper functions
-def get_clients():
+
+def _extract_subject_from_request(req: Request) -> Optional[str]:
+    """
+    Determine which user to impersonate.
+    Priority: request header -> query param -> env default -> None (falls back to raw SA).
+    """
+    # Header first (recommended)
+    hed = req.headers.get(IMPERSONATE_HEADER)
+    if hed and hed.strip():
+        return hed.strip()
+
+    # Optional: allow a query param for testing (remove if you don't want this)
+    qp = req.query_params.get("userEmail")
+    if qp and qp.strip():
+        return qp.strip()
+
+    # Optional fallback configured via env
+    if DEFAULT_IMPERSONATION_SUBJECT:
+        return DEFAULT_IMPERSONATION_SUBJECT.strip()
+
+    return None
+
+def get_clients(subject: Optional[str] = None): # client builder accepts now optional subjects for impersonation
+    """
+    Build Sheets/Drive/Docs clients.
+    If `subject` is provided and DWD is configured, we impersonate that user,
+    so created files/folders are owned by them (not by the service account).
+    """
     info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    creds = Credentials.from_service_account_info(info, scopes=[
+    base_creds = Credentials.from_service_account_info(info, scopes=[
         "https://www.googleapis.com/auth/spreadsheets.readonly",
         "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/documents"  # add Docs scope
+        "https://www.googleapis.com/auth/documents",
     ])
-    sheets = build("sheets", "v4", credentials=creds)
-    drive  = build("drive",  "v3", credentials=creds)
-    docs   = build("docs",   "v1", credentials=creds)
+
+    creds = base_creds.with_subject(subject) if subject else base_creds
+
+    try:
+        sheets = build("sheets", "v4", credentials=creds)
+        drive  = build("drive",  "v3", credentials=creds)
+        docs   = build("docs",   "v1", credentials=creds)
+    except RefreshError as e:
+        # Helpful error if DWD isn’t configured, or subject not allowed for the scopes
+        raise HTTPException(
+            500,
+            f"Failed to obtain delegated credentials. "
+            f"Check DWD configuration/scopes for subject='{subject}'. Details: {e}"
+        )
+
     return sheets, drive, docs
+
 
 def require_api_key(req: Request):
     if not API_KEY or req.headers.get("x-api-key") != API_KEY:
@@ -36,7 +80,7 @@ def create_folder(drive, name: str, parent_id: str) -> str:
         "mimeType": "application/vnd.google-apps.folder",
         "parents": [parent_id]
     }
-    folder = drive.files().create(body=metadata, fields="id").execute()
+    folder = drive.files().create(body=metadata, fields="id, owners", supportsAllDrives=True ).execute()
     return folder["id"]
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
@@ -46,7 +90,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         "mimeType": "application/vnd.google-apps.document",
         "parents": [folder_id]
     }
-    file = drive.files().create(body=file_metadata, fields="id").execute()
+    file = drive.files().create(body=file_metadata, fields="id, owners", supportsAllDrives=True).execute()
     doc_id = file.get("id")
 
     # Step 2: Insert content into the new Doc
@@ -62,9 +106,10 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
 def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
                  headerRow: int = 1, roleHeader: str = "Role"):
     require_api_key(request)
-    sheets, drive, _ = get_clients()
+    subject = _extract_subject_from_request(request)
+    sheets, drive, _ = get_clients(subject)
 
-    meta = drive.files().get(fileId=fileId, fields="id,name,mimeType,modifiedTime").execute()
+    meta = drive.files().get(fileId=fileId, fields="id,name,mimeType,modifiedTime", supportsAllDrives=True).execute()
     if meta.get("mimeType") != "application/vnd.google-apps.spreadsheet":
         raise HTTPException(400, "File is not a Google Sheet")
 
@@ -130,10 +175,11 @@ def stages_summary(
 ):
     # Reuse your existing API key check & Google clients
     require_api_key(request)
-    sheets, drive, _ = get_clients()
+    subject = _extract_subject_from_request(request)
+    sheets, drive, _ = get_clients(subject)
 
     # Make sure it's a Google Sheet we can read
-    meta = drive.files().get(fileId=fileId, fields="mimeType").execute()
+    meta = drive.files().get(fileId=fileId, fields="mimeType", supportsAllDrives=True).execute()
     if meta.get("mimeType") != "application/vnd.google-apps.spreadsheet":
         raise HTTPException(400, "File is not a Google Sheet")
 
@@ -209,7 +255,8 @@ def stages_summary(
 @app.post("/positions/create")
 def create_position(request: Request, name: str, department: str = "Software Engineering"):
     require_api_key(request)
-    _, drive, _ = get_clients()
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
@@ -221,7 +268,7 @@ def create_position(request: Request, name: str, department: str = "Software Eng
         f"and trashed=false and name='{department}' "
         f"and '{HIRING_FOLDER_ID}' in parents"
     )
-    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
     items = results.get("files", [])
 
     if items:
@@ -235,7 +282,7 @@ def create_position(request: Request, name: str, department: str = "Software Eng
         f"and trashed=false and name='{name}' "
         f"and '{department_folder_id}' in parents"
     )
-    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
     if results.get("files"):
         return {
             "message": f"Role '{name}' already exists in {department}",
@@ -310,7 +357,8 @@ def create_position(request: Request, name: str, department: str = "Software Eng
 @app.get("/positions/list") # End point that understands what department folders already exist under Hiring folder
 def list_positions(request: Request, department: Optional[str] = None):
     require_api_key(request)
-    _, drive, _ = get_clients()
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
@@ -324,7 +372,7 @@ def list_positions(request: Request, department: Optional[str] = None):
             f"and trashed=false and name='{department}' "
             f"and '{HIRING_FOLDER_ID}' in parents"
         )
-        results = drive.files().list(q=query, fields="files(id,name)").execute()
+        results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
         items = results.get("files", [])
         if not items:
             return {"roles": [], "department": department, "exists": False}
@@ -332,7 +380,7 @@ def list_positions(request: Request, department: Optional[str] = None):
 
     # List folders under parent (roles or departments)
     query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
-    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
     roles = [{"id": f["id"], "name": f["name"]} for f in results.get("files", [])]
 
     return {
@@ -346,7 +394,8 @@ from typing import Optional
 @app.post("/positions/createJD")
 def create_jd(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
-    _, drive, docs = get_clients()
+    subject = _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
 
     if not content:
         content = f"""Job Description for {roleName}
@@ -372,7 +421,8 @@ Qualifications:
 @app.post("/positions/createScreeningTemplate")
 def create_screening(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
-    _, drive, docs = get_clients()
+    subject = _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
 
     if not content:
         content = f"""Screening Template for {roleName}
@@ -399,7 +449,8 @@ Evaluator Notes:
 @app.post("/positions/createScoringModel")
 def create_scoring(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
     require_api_key(request)
-    _, drive, docs = get_clients()
+    subject = _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
 
     if not content:
         content = f"""Scoring Rubric for {roleName}
