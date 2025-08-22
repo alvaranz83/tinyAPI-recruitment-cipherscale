@@ -39,20 +39,6 @@ def create_folder(drive, name: str, parent_id: str) -> str:
     folder = drive.files().create(body=metadata, fields="id").execute()
     return folder["id"]
 
-def upload_doc_to_drive(drive, folder_id: str, name: str, content: str) -> str:
-    """Upload a text file as Google Doc into the given folder"""
-    file_metadata = {
-        "name": name,
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [folder_id]
-    }
-    media = {
-        "mimeType": "text/plain",
-        "body": content
-    }
-    file = drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
-    return file["id"]
-
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
     # Step 1: Create the Google Doc directly in the folder via Drive API
     file_metadata = {
