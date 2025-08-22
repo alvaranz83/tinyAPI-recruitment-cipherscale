@@ -54,27 +54,21 @@ def upload_doc_to_drive(drive, folder_id: str, name: str, content: str) -> str:
     return file["id"]
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
-    # Step 1: Create empty Google Doc
-    doc = docs.documents().create(body={"title": title}).execute()
-    doc_id = doc.get("documentId")
+    # Step 1: Create the Google Doc directly in the folder via Drive API
+    file_metadata = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [folder_id]
+    }
+    file = drive.files().create(body=file_metadata, fields="id").execute()
+    doc_id = file.get("id")
 
-    # Step 2: Insert content at beginning
-    requests = [
-        {"insertText": {"location": {"index": 1}, "text": content}}
-    ]
+    # Step 2: Insert content into the new Doc
+    requests = [{"insertText": {"location": {"index": 1}, "text": content}}]
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
 
-    # Step 3: Move into the correct Drive folder
-    file = drive.files().get(fileId=doc_id, fields="parents").execute()
-    prev_parents = ",".join(file.get("parents"))
-    drive.files().update(
-        fileId=doc_id,
-        addParents=folder_id,
-        removeParents=prev_parents,
-        fields="id, parents"
-    ).execute()
-
     return doc_id
+
 
 #End of Helper Functions
 
