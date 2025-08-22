@@ -253,10 +253,20 @@ def stages_summary(
     }
 
 @app.post("/positions/create")
-def create_position(request: Request, name: str, department: str = "Software Engineering"):
+from pydantic import BaseModel
+
+class PositionRequest(BaseModel):
+    name: str
+    department: str = "Software Engineering"
+
+@app.post("/positions/create")
+def create_position(request: Request, body: PositionRequest):
     require_api_key(request)
     subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
+
+    name = body.name
+    department = body.department
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
