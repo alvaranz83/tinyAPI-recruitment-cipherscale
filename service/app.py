@@ -255,18 +255,19 @@ class PositionRequest(BaseModel):
     name: str
     department: str = "Software Engineering"
     dryRun: bool = False
+    userEmail: Optional[str] = None  # <-- add this
 
 @app.post("/positions/create")
 def create_position(request: Request, body: PositionRequest):
     require_api_key(request)
-    subject = _extract_subject_from_request(request)
+    # prefer body.userEmail; then header/query/env; else SA
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
     name = body.name
     department = body.department
 
-        # 👇 dryRun early exit
-    if getattr(body, "dryRun", False):
+    if body.dryRun:
         return {
             "message": f"[dryRun] Would create role '{name}' in {department}",
             "positionId": "",
