@@ -251,10 +251,10 @@ def stages_summary(
 
 
 
-
 class PositionRequest(BaseModel):
     name: str
     department: str = "Software Engineering"
+    dryRun: bool = False
 
 @app.post("/positions/create")
 def create_position(request: Request, body: PositionRequest):
@@ -264,6 +264,15 @@ def create_position(request: Request, body: PositionRequest):
 
     name = body.name
     department = body.department
+
+        # 👇 dryRun early exit
+    if getattr(body, "dryRun", False):
+        return {
+            "message": f"[dryRun] Would create role '{name}' in {department}",
+            "positionId": "",
+            "departmentFolderId": "",
+            "created": False
+        }
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
