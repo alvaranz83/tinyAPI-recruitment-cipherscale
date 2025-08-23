@@ -406,11 +406,21 @@ def list_positions(request: Request, department: Optional[str] = None):
     }
 
 
+
+class CreateJDRequest(BaseModel):
+    positionId: str
+    roleName: str
+    content: Optional[str] = None
+    userEmail: Optional[str] = None  # <-- add this
+
 @app.post("/positions/createJD")
-def create_jd(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
+def create_jd(request: Request, body: CreateJDRequest):
     require_api_key(request)
-    subject = _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)  # prefer body
     _, drive, docs = get_clients(subject)
+
+    content = body.content or f"""Job Description for {body.roleName}
+..."""
 
     if not content:
         content = f"""Job Description for {roleName}
@@ -425,7 +435,7 @@ Qualifications:
 - Strong analytical, communication, and leadership skills
 """
 
-    file_id = create_google_doc(docs, drive, positionId, f"JD - {roleName}", content)
+    file_id = create_google_doc(docs, drive, body.positionId, f"JD - {roleName}", content)
     return {
         "message": f"JD created for {roleName}",
         "fileId": file_id,
