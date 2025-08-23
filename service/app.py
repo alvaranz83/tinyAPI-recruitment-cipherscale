@@ -423,34 +423,38 @@ def create_jd(request: Request, body: CreateJDRequest):
 ..."""
 
     if not content:
-        content = f"""Job Description for {roleName}
+        content = f"""Job Description for {body.roleName}
 
 Responsibilities:
-- Define and execute {roleName} strategies
+- Define and execute {body.roleName} strategies
 - Collaborate with cross-functional teams
 - Deliver measurable outcomes
 
 Qualifications:
-- Proven experience in {roleName}
+- Proven experience in {body.roleName}
 - Strong analytical, communication, and leadership skills
 """
 
-    file_id = create_google_doc(docs, drive, body.positionId, f"JD - {roleName}", content)
+    file_id = create_google_doc(docs, drive, body.positionId, f"JD - {body.roleName}", content)
     return {
-        "message": f"JD created for {roleName}",
+        "message": f"JD created for {body.roleName}",
         "fileId": file_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
 
+class CreateScreeningRequest(BaseModel):
+    positionId: str
+    roleName: str
+    content: Optional[str] = None
+    userEmail: Optional[str] = None  # for impersonation
 
 @app.post("/positions/createScreeningTemplate")
-def create_screening(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
+def create_screening(request: Request, body: CreateScreeningRequest):
     require_api_key(request)
-    subject = _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    if not content:
-        content = f"""Screening Template for {roleName}
+    content = body.content or f"""Screening Template for {body.roleName}
 
 Candidate Name:
 Date:
@@ -463,22 +467,26 @@ Questions:
 Evaluator Notes:
 """
 
-    file_id = create_google_doc(docs, drive, positionId, f"Screening Template - {roleName}", content)
+    file_id = create_google_doc(docs, drive, body.positionId, f"Screening Template - {body.roleName}", content)
     return {
-        "message": f"Screening template created for {roleName}",
+        "message": f"Screening template created for {body.roleName}",
         "fileId": file_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
 
+class CreateScoringRequest(BaseModel):
+    positionId: str
+    roleName: str
+    content: Optional[str] = None
+    userEmail: Optional[str] = None  # for impersonation
 
 @app.post("/positions/createScoringModel")
-def create_scoring(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
+def create_scoring(request: Request, body: CreateScoringRequest):
     require_api_key(request)
-    subject = _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    if not content:
-        content = f"""Scoring Rubric for {roleName}
+    content = body.content or f"""Scoring Rubric for {body.roleName}
 
 Criteria (1-5 each):
 - Role Expertise
@@ -489,9 +497,9 @@ Criteria (1-5 each):
 Total Score: ___ / 20
 """
 
-    file_id = create_google_doc(docs, drive, positionId, f"Scoring Rubric - {roleName}", content)
+    file_id = create_google_doc(docs, drive, body.positionId, f"Scoring Rubric - {body.roleName}", content)
     return {
-        "message": f"Scoring rubric created for {roleName}",
+        "message": f"Scoring rubric created for {body.roleName}",
         "fileId": file_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
