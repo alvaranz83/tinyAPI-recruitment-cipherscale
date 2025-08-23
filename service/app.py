@@ -89,6 +89,10 @@ def create_folder(drive, name: str, parent_id: str) -> str:
     print("create_folder owners:", folder.get("owners"))  # 👈 logs impersonated owner or shared drive
     return folder["id"]
 
+def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str: 
+    """Always create a new subfolder inside parent folder."""
+    return create_folder(drive, subfolder_name, parent_id)
+
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
     # Step 1: Create the Google Doc directly in the folder via Drive API
     file_metadata = {
@@ -420,29 +424,21 @@ class CreateJDRequest(BaseModel):
 @app.post("/positions/createJD")
 def create_jd(request: Request, body: CreateJDRequest):
     require_api_key(request)
-    subject = body.userEmail or _extract_subject_from_request(request)  # prefer body
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
+    # ✅ Always create a fresh subfolder for JD
+    jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Descriptions")
+
     content = body.content or f"""Job Description for {body.roleName}
-..."""
-
-    if not content:
-        content = f"""Job Description for {body.roleName}
-
-Responsibilities:
-- Define and execute {body.roleName} strategies
-- Collaborate with cross-functional teams
-- Deliver measurable outcomes
-
-Qualifications:
-- Proven experience in {body.roleName}
-- Strong analytical, communication, and leadership skills
+...
 """
 
-    file_id = create_google_doc(docs, drive, body.positionId, f"JD - {body.roleName}", content)
+    file_id = create_google_doc(docs, drive, jd_folder_id, f"JD - {body.roleName}", content)
     return {
         "message": f"JD created for {body.roleName}",
         "fileId": file_id,
+        "folderId": jd_folder_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
 
@@ -458,25 +454,24 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
+    # ✅ Always create a fresh subfolder for Screening
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
+
     content = body.content or f"""Screening Template for {body.roleName}
 
 Candidate Name:
 Date:
-
-Questions:
-1. Why are you interested in this role?
-2. Describe your relevant skills and experience.
-3. What achievements best demonstrate your impact?
-
-Evaluator Notes:
+...
 """
 
-    file_id = create_google_doc(docs, drive, body.positionId, f"Screening Template - {body.roleName}", content)
+    file_id = create_google_doc(docs, drive, screening_folder_id, f"Screening Template - {body.roleName}", content)
     return {
         "message": f"Screening template created for {body.roleName}",
         "fileId": file_id,
+        "folderId": screening_folder_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
+
 
 class CreateScoringRequest(BaseModel):
     positionId: str
@@ -490,6 +485,9 @@ def create_scoring(request: Request, body: CreateScoringRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
+    # ✅ Always create a fresh subfolder for Scoring
+    scoring_folder_id = create_named_subfolder(drive, body.positionId, "Scoring Rubrics")
+
     content = body.content or f"""Scoring Rubric for {body.roleName}
 
 Criteria (1-5 each):
@@ -497,16 +495,17 @@ Criteria (1-5 each):
 - Problem Solving
 - Communication
 - Culture Fit
-
-Total Score: ___ / 20
 """
 
-    file_id = create_google_doc(docs, drive, body.positionId, f"Scoring Rubric - {body.roleName}", content)
+    file_id = create_google_doc(docs, drive, scoring_folder_id, f"Scoring Rubric - {body.roleName}", content)
     return {
         "message": f"Scoring rubric created for {body.roleName}",
         "fileId": file_id,
+        "folderId": scoring_folder_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
+
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
