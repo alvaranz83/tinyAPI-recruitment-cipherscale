@@ -318,57 +318,7 @@ def create_position(request: Request, body: PositionRequest):
     # Step 2: Create role folder
     position_id = create_folder(drive, name, department_folder_id)
 
-    # Step 3: Subfolders (Role Description, Pre-screening, Candidate Stages)
-    role_desc_id = create_folder(drive, "Role Description", position_id)
-    prescreen_id = create_folder(drive, "Pre-screening questionnaire", position_id)
-    stages_id = create_folder(drive, "Candidate Stages", position_id)
-
-    # Step 4: Candidate stage subfolders per department
-    department_stages = {
-        "Software Engineering": [
-            "Manually Applied", "TA Sourced", "TA pre-screening scheduled",
-            "TA pre-screening completed", "1st technical interview scheduled",
-            "1st technical interview completed", "2nd technical interview scheduled",
-            "2nd technical interview completed", "Leadership-CEO chat",
-            "Candidate dropped", "Candidate rejected", "Offer made",
-            "Offer accepted", "Contract sent", "Contract signed off"
-        ],
-        "Marketing": [
-            "Applied", "Recruiter screen", "Marketing skills assessment / portfolio review",
-            "Hiring Manager interview", "Team interview", "Leadership interview",
-            "Candidate dropped", "Candidate rejected", "Offer made",
-            "Offer accepted", "Contract sent", "Contract signed off"
-        ],
-        "Sales": [
-            "Applied", "Recruiter screen", "Hiring Manager interview",
-            "Role play / sales pitch simulation", "Panel interview", "Leadership interview",
-            "Candidate dropped", "Candidate rejected", "Offer made",
-            "Offer accepted", "Contract sent", "Contract signed off"
-        ],
-        "Product & Project Management": [
-            "Applied", "Recruiter screen", "Product case study / take-home assignment",
-            "Hiring Manager interview", "Cross-functional panel interview",
-            "Leadership interview", "Candidate dropped", "Candidate rejected",
-            "Offer made", "Offer accepted", "Contract sent", "Contract signed off"
-        ],
-        "HR & Recruitment": [
-            "Applied", "Recruiter screen", "HR knowledge/assessment",
-            "Hiring Manager interview", "Panel interview", "Leadership interview",
-            "Candidate dropped", "Candidate rejected", "Offer made",
-            "Offer accepted", "Contract sent", "Contract signed off"
-        ],
-        "Finance & Accounting": [
-            "Applied", "Recruiter screen", "Finance/Accounting technical test",
-            "Hiring Manager interview", "Team/peer interview", "Leadership interview",
-            "Candidate dropped", "Candidate rejected", "Offer made",
-            "Offer accepted", "Contract sent", "Contract signed off"
-        ]
-    }
-
-    stages = department_stages.get(department, department_stages["Software Engineering"])
-    for stage in stages:
-        create_folder(drive, stage, stages_id)
-
+    
     return {
         "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
