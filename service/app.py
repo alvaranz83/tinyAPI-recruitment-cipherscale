@@ -73,8 +73,10 @@ def require_api_key(req: Request):
     if not API_KEY or req.headers.get("x-api-key") != API_KEY:
         raise HTTPException(403, "Forbidden")
 
+
 def norm(s: Optional[str]) -> str:
     return (s or "").strip()
+
 
 def create_folder(drive, name: str, parent_id: str) -> str:
     """Create a folder and return its Google Drive file ID"""
@@ -84,6 +86,7 @@ def create_folder(drive, name: str, parent_id: str) -> str:
         "parents": [parent_id]
     }
     folder = drive.files().create(body=metadata, fields="id, owners", supportsAllDrives=True ).execute()
+    print("create_folder owners:", folder.get("owners"))  # 👈 logs impersonated owner or shared drive
     return folder["id"]
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
@@ -504,3 +507,11 @@ Total Score: ___ / 20
         "fileId": file_id,
         "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
     }
+
+@app.get("/whoami") # Verify who the api is acting as when user impersonation
+def whoami(request: Request):
+    require_api_key(request)
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+    about = drive.about().get(fields="user(emailAddress,displayName),storageQuota").execute()
+    return {"subject_param": subject, "drive_user": about.get("user")}
