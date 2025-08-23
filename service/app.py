@@ -6,6 +6,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
+from collections import Counter
 
 
 IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
@@ -159,13 +160,7 @@ def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
         }
     }
 
-from collections import Counter
-from typing import Optional, List
-from fastapi import HTTPException, Request
-from datetime import datetime, timezone
 
-def norm(s: Optional[str]) -> str:
-    return (s or "").strip()
 
 @app.get("/stages/summary")
 def stages_summary(
@@ -401,7 +396,6 @@ def list_positions(request: Request, department: Optional[str] = None):
         "exists": True
     }
 
-from typing import Optional
 
 @app.post("/positions/createJD")
 def create_jd(request: Request, positionId: str, roleName: str, content: Optional[str] = None):
