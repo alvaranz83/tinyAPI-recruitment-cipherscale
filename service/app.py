@@ -100,14 +100,32 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         "mimeType": "application/vnd.google-apps.document",
         "parents": [folder_id]
     }
-    file = drive.files().create(body=file_metadata, fields="id, owners", supportsAllDrives=True).execute()
+    file = drive.files().create(
+        body=file_metadata, fields="id, owners", supportsAllDrives=True
+    ).execute()
     doc_id = file.get("id")
 
-    # Step 2: Insert content into the new Doc
-    requests = [{"insertText": {"location": {"index": 1}, "text": content}}]
+    # Step 2: Format the content into sections
+    requests = [
+        # Clear out any existing text
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 1e9}}},
+        
+        # Insert Title
+        {"insertText": {"location": {"index": 1}, "text": title + "\n"}},
+        {"updateParagraphStyle": {
+            "range": {"startIndex": 1, "endIndex": len(title) + 2},
+            "paragraphStyle": {"namedStyleType": "HEADING_1"},
+            "fields": "namedStyleType"
+        }},
+        
+        # Insert the body content (plain text for now, can be extended with formatting logic)
+        {"insertText": {"location": {"index": len(title) + 2}, "text": "\n" + content}}
+    ]
+
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
 
     return doc_id
+
 
 
 #End of Helper Functions
@@ -379,10 +397,30 @@ def create_jd(request: Request, body: CreateJDRequest):
 
     # ✅ Always create a fresh subfolder for JD
     jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Descriptions")
-
-    content = body.content or f"""Job Description for {body.roleName}
-...
-"""
+    
+    # ✅ Default polished template
+    content = body.content or f"""
+        **Job Description – {body.roleName}**
+        
+        **Role Summary**
+        We are seeking a strategic and results-oriented **{body.roleName}** to drive our initiatives and ensure measurable business impact. 
+        This role requires strong leadership, cross-functional collaboration, and a proven ability to deliver results in fast-paced environments.
+        
+        **Key Responsibilities**
+        - Develop and execute the company’s {body.roleName} strategy.
+        - Collaborate with Product, Sales, and Engineering teams to align marketing and growth goals.
+        - Lead and mentor a high-performing team to deliver against objectives.
+        - Define, measure, and report on KPIs such as ROI, retention, and conversion.
+        - Partner with leadership to shape the company’s strategic direction.
+        
+        **Requirements**
+        - 7+ years of professional experience, including at least 3 years in a leadership role.
+        - Proven success in executing scalable strategies in dynamic environments.
+        - Strong analytical and decision-making skills, with attention to detail.
+        - Excellent communication, presentation, and stakeholder management abilities.
+        
+        
+        """
 
     file_id = create_google_doc(docs, drive, jd_folder_id, f"JD - {body.roleName}", content)
     return {
@@ -407,12 +445,31 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     # ✅ Always create a fresh subfolder for Screening
     screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
 
-    content = body.content or f"""Screening Template for {body.roleName}
-
-Candidate Name:
-Date:
-...
-"""
+    c# ✅ Default polished template
+    content = body.content or f"""
+        **Screening Template – {body.roleName}**
+        
+        **Candidate Information**
+        - **Name:** ______________________________________
+        - **Date:** ______________________________________
+        
+        **Screening Questions**
+        1. Why are you interested in the role of **{body.roleName}**?
+        2. Please describe your most relevant skills and experience for this position.
+        3. What achievements best demonstrate your impact in previous roles?
+        4. How do you typically approach problem-solving in your area of expertise?
+        5. What motivates you to join our company at this stage of growth?
+        
+        **Evaluator Notes**
+        __________________________________________________________
+        __________________________________________________________
+        __________________________________________________________
+        
+        **Recommendation**
+        - [ ] Progress to next stage
+        - [ ] Hold for review
+        - [ ] Reject
+        """
 
     file_id = create_google_doc(docs, drive, screening_folder_id, f"Screening Template - {body.roleName}", content)
     return {
@@ -438,14 +495,29 @@ def create_scoring(request: Request, body: CreateScoringRequest):
     # ✅ Always create a fresh subfolder for Scoring
     scoring_folder_id = create_named_subfolder(drive, body.positionId, "Scoring Rubrics")
 
-    content = body.content or f"""Scoring Rubric for {body.roleName}
-
-Criteria (1-5 each):
-- Role Expertise
-- Problem Solving
-- Communication
-- Culture Fit
-"""
+    # ✅ Default polished template
+    content = body.content or f"""
+        **Interview Scoring Rubric – {body.roleName}**
+        
+        **Scoring Guidelines**
+        Rate each category on a scale of **1 (Poor) to 5 (Excellent)**. 
+        Provide written feedback to support your score.
+        
+        **Evaluation Categories**
+        - **Role Expertise (1–5):** Depth of knowledge and skills relevant to {body.roleName}.
+        - **Problem-Solving (1–5):** Ability to analyze challenges and propose solutions.
+        - **Communication (1–5):** Clarity, articulation, and ability to collaborate effectively.
+        - **Culture Fit (1–5):** Alignment with company values, adaptability, and teamwork.
+        - **Leadership & Initiative (1–5):** (if applicable) Ability to inspire, mentor, and take ownership.
+        
+        **Overall Score**
+        __/25
+        
+        **Evaluator Comments**
+        __________________________________________________________
+        __________________________________________________________
+        __________________________________________________________
+        """
 
     file_id = create_google_doc(docs, drive, scoring_folder_id, f"Scoring Rubric - {body.roleName}", content)
     return {
