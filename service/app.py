@@ -94,6 +94,7 @@ def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str:
     return create_folder(drive, subfolder_name, parent_id)
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
+    # Step 1: Create the Google Doc in the target folder
     file_metadata = {
         "name": title,
         "mimeType": "application/vnd.google-apps.document",
@@ -102,9 +103,11 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     file = drive.files().create(body=file_metadata, fields="id", supportsAllDrives=True).execute()
     doc_id = file["id"]
 
+    # Step 2: Fetch doc length (to clear)
     doc = docs.documents().get(documentId=doc_id).execute()
     doc_length = doc.get("body").get("content")[-1]["endIndex"]
 
+    # Step 3: Clear existing text
     requests = []
     if doc_length > 2:
         requests.append({
@@ -113,21 +116,28 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             }
         })
 
+    # Step 4: Insert line by line at the END of doc
     lines = [line.rstrip() for line in content.strip().split("\n")]
-    cursor = 1
 
+    insert_index = 1
     for i, line in enumerate(lines):
         if not line.strip():
-            cursor += 1
             continue
 
-        start = cursor
         text = line + "\n"
-        end = start + len(text)
 
-        requests.append({"insertText": {"location": {"index": cursor}, "text": text}})
+        # Insert at the end of the doc each time
+        requests.append({
+            "insertText": {"location": {"index": insert_index}, "text": text}
+        })
 
-        if i == 0:  # First line → Heading 1
+        # Figure out style range
+        start = insert_index
+        end = insert_index + len(text)
+        insert_index = end  # update pointer for style ranges only
+
+        # Apply formatting
+        if i == 0:
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -135,7 +145,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                     "fields": "namedStyleType"
                 }
             })
-        elif line.endswith(":"):  # Section header
+        elif line.endswith(":"):
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -143,14 +153,14 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                     "fields": "namedStyleType"
                 }
             })
-        elif line.startswith("- "):  # Bullet point
+        elif line.startswith("- "):
             requests.append({
                 "createParagraphBullets": {
                     "range": {"startIndex": start, "endIndex": end},
                     "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
                 }
             })
-        else:  # Normal body text
+        else:
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -159,9 +169,9 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                 }
             })
 
-        cursor = end
-
+    # Step 5: Execute
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
     return doc_id
 
 
@@ -439,15 +449,15 @@ def create_jd(request: Request, body: CreateJDRequest):
     
     # ✅ Default polished template
     content = body.content or f"""
-        Job Description – {body.roleName}:
+        Job Description – {body.roleName}
         
         Role Summary:
-        We are seeking a strategic and results-oriented **{body.roleName}** to drive our initiatives and ensure measurable business impact. 
+        We are seeking a strategic and results-oriented {body.roleName} to drive our initiatives and ensure measurable business impact. 
         This role requires strong leadership, cross-functional collaboration, and a proven ability to deliver results in fast-paced environments.
         
         Key Responsibilities:
         - Develop and execute the company’s {body.roleName} strategy.
-        - Collaborate with Product, Sales, and Engineering teams to align marketing and growth goals.
+        - Collaborate with Product, Sales, and Engineering teams to align goals.
         - Lead and mentor a high-performing team to deliver against objectives.
         - Define, measure, and report on KPIs such as ROI, retention, and conversion.
         - Partner with leadership to shape the company’s strategic direction.
@@ -457,7 +467,6 @@ def create_jd(request: Request, body: CreateJDRequest):
         - Proven success in executing scalable strategies in dynamic environments.
         - Strong analytical and decision-making skills, with attention to detail.
         - Excellent communication, presentation, and stakeholder management abilities.
-        
         
         """
 
@@ -486,14 +495,14 @@ def create_screening(request: Request, body: CreateScreeningRequest):
 
     # ✅ Default polished template
     content = body.content or f"""
-        Screening Template – {body.roleName}:
+        Screening Template – {body.roleName}
         
         Candidate Information:
         - Name: ______________________________________
         - Date: ______________________________________
         
         Screening Questions:
-        1. Why are you interested in the role of **{body.roleName}**?
+        1. Why are you interested in the role of {body.roleName}?
         2. Please describe your most relevant skills and experience for this position.
         3. What achievements best demonstrate your impact in previous roles?
         4. How do you typically approach problem-solving in your area of expertise?
@@ -505,10 +514,11 @@ def create_screening(request: Request, body: CreateScreeningRequest):
         __________________________________________________________
         
         Recommendation:
-        - [ ] Progress to next stage
-        - [ ] Hold for review
-        - [ ] Reject
-        """
+        - Progress to next stage
+        - Hold for review
+        - Reject
+        
+                """
 
     file_id = create_google_doc(docs, drive, screening_folder_id, f"Screening Template - {body.roleName}", content)
     return {
@@ -536,27 +546,28 @@ def create_scoring(request: Request, body: CreateScoringRequest):
 
     # ✅ Default polished template
     content = body.content or f"""
-        Interview Scoring Rubric – {body.roleName}:
+        Interview Scoring Rubric – {body.roleName}
         
         Scoring Guidelines:
-        Rate each category on a scale of **1 (Poor) to 5 (Excellent). 
+        Rate each category on a scale of 1 (Poor) to 5 (Excellent). 
         Provide written feedback to support your score.
         
         Evaluation Categories:
-        - Role Expertise (1–5):** Depth of knowledge and skills relevant to {body.roleName}.
-        - Problem-Solving (1–5):** Ability to analyze challenges and propose solutions.
-        - Communication (1–5):** Clarity, articulation, and ability to collaborate effectively.
-        - Culture Fit (1–5):** Alignment with company values, adaptability, and teamwork.
-        - Leadership & Initiative (1–5):** (if applicable) Ability to inspire, mentor, and take ownership.
+        - Role Expertise (1–5): Depth of knowledge and skills relevant to {body.roleName}.
+        - Problem-Solving (1–5): Ability to analyze challenges and propose solutions.
+        - Communication (1–5): Clarity, articulation, and ability to collaborate effectively.
+        - Culture Fit (1–5): Alignment with company values, adaptability, and teamwork.
+        - Leadership & Initiative (1–5): Ability to inspire, mentor, and take ownership.
         
         Overall Score:
-        __/25
+        /25
         
         Evaluator Comments:
         __________________________________________________________
         __________________________________________________________
         __________________________________________________________
         """
+
 
     file_id = create_google_doc(docs, drive, scoring_folder_id, f"Scoring Rubric - {body.roleName}", content)
     return {
