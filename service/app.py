@@ -110,14 +110,18 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     ).execute()
     doc_id = file.get("id")
 
-    # Step 2: Fetch the document length (so we can safely clear it)
+    # Step 2: Fetch the document length
     doc = docs.documents().get(documentId=doc_id).execute()
     doc_length = doc.get("body").get("content")[-1]["endIndex"]
-
-    # Step 3: Prepare requests
-    requests = [
-        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length}}}
-    ]
+    
+    # Step 3: Safely clear existing content (exclude trailing newline)
+    requests = []
+    if doc_length > 2:  # only clear if there's content beyond the initial newline
+        requests.append({
+            "deleteContentRange": {
+                "range": {"startIndex": 1, "endIndex": doc_length - 1}
+            }
+        })
 
     # Step 4: Parse content into sections
     lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
