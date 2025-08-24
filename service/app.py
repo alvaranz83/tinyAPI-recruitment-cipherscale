@@ -94,7 +94,12 @@ def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str:
     return create_folder(drive, subfolder_name, parent_id)
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
-    # Step 1: Create the Google Doc directly in the folder via Drive API
+    """
+    Creates a Google Doc with proper headings and styles applied.
+    Supports markdown-like **bold** and section headers.
+    """
+
+    # Step 1: Create the Google Doc in the target folder
     file_metadata = {
         "name": title,
         "mimeType": "application/vnd.google-apps.document",
@@ -105,23 +110,64 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     ).execute()
     doc_id = file.get("id")
 
-    # Step 2: Format the content into sections
+    # Step 2: Parse content into sections by line breaks
+    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+
     requests = [
-        # Clear out any existing text
-        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 1e9}}},
-        
-        # Insert Title
-        {"insertText": {"location": {"index": 1}, "text": title + "\n"}},
-        {"updateParagraphStyle": {
-            "range": {"startIndex": 1, "endIndex": len(title) + 2},
-            "paragraphStyle": {"namedStyleType": "HEADING_1"},
-            "fields": "namedStyleType"
-        }},
-        
-        # Insert the body content (plain text for now, can be extended with formatting logic)
-        {"insertText": {"location": {"index": len(title) + 2}, "text": "\n" + content}}
+        {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": 1e9}}}  # clear placeholder
     ]
 
+    cursor = 1
+    for line in lines:
+        start = cursor
+        text = line + "\n"
+        end = start + len(text)
+
+        # Insert the text
+        requests.append({
+            "insertText": {"location": {"index": cursor}, "text": text}
+        })
+
+        # Style rules
+        if line.startswith("**") and line.endswith("**"):  
+            # Heading 1 (section titles wrapped in **Title**)
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "paragraphStyle": {"namedStyleType": "HEADING_1"},
+                    "fields": "namedStyleType"
+                }
+            })
+        elif line.startswith("- "):  
+            # Bulleted list
+            requests.append({
+                "createParagraphBullets": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+                }
+            })
+        elif line.endswith(":"):  
+            # Treat as a sub-heading (HEADING_2)
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "paragraphStyle": {"namedStyleType": "HEADING_2"},
+                    "fields": "namedStyleType"
+                }
+            })
+        else:
+            # Normal body text
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
+                    "fields": "namedStyleType"
+                }
+            })
+
+        cursor = end
+
+    # Step 3: Send batch update
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
 
     return doc_id
