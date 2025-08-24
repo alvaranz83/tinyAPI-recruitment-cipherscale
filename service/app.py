@@ -499,7 +499,7 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     # ✅ Always create a fresh subfolder for Screening
     screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
 
-    c# ✅ Default polished template
+    # ✅ Default polished template
     content = body.content or f"""
         **Screening Template – {body.roleName}**
         
