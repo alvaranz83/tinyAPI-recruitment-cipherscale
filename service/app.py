@@ -11,8 +11,8 @@ import textwrap
 
 # ----- Branding -----
 LOGO_URI = "https://drive.google.com/uc?id=1tGh_4cmuRhLOX4ZYcQsaX_F1bcP0x6L4"
-LOGO_WIDTH_PT = 120   # ~1.67 in (adjust as you like)
-LOGO_HEIGHT_PT = 36   # ~0.5 in  (keep aspect ratio-ish)
+LOGO_WIDTH_PT = 200   # ~1.67 in (adjust as you like)
+LOGO_HEIGHT_PT = 72   # ~0.5 in  (keep aspect ratio-ish)
 # End of Logo branding
 
 IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
@@ -116,19 +116,20 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     if doc_length > 2:
         requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}})
 
-    # ----------------------------------------------------------------
-    # HEADER: enable headers and create a DEFAULT header on all pages
-    # ----------------------------------------------------------------
-    requests.append({
-        "updateDocumentStyle": {
-            "documentStyle": {"useFirstPageHeaderFooter": True},
-            "fields": "useFirstPageHeaderFooter",
-        }
-    })
-    requests.append({"createHeader": {"type": "DEFAULT"}})
+        # ----------------------------------------------------------------
+        # HEADER: same on all pages
+        # ----------------------------------------------------------------
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": [
+            {"updateDocumentStyle": {
+                "documentStyle": {"useFirstPageHeaderFooter": False},
+                "fields": "useFirstPageHeaderFooter"
+            }},
+            {"createHeader": {"type": "DEFAULT"}}
+        ]}).execute()
+        
+        # then immediately insert your logo into that DEFAULT header,
+        # exactly as you do now with insertInlineImage / updateParagraphStyle.
 
-    # Execute phase 1 so we can read the headerId
-    phase1 = docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
     header_id = None
     for reply in phase1.get("replies", []):
         if "createHeader" in reply:
