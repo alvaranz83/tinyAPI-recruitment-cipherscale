@@ -97,40 +97,42 @@ def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str:
 
 
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
-    # Step 1: Create the Google Doc in the target folder
-    file_metadata = {
-        "name": title,
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [folder_id]
-    }
+    # 1) Create the Google Doc in the target folder
+    file_metadata = {"name": title, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
     file = drive.files().create(body=file_metadata, fields="id", supportsAllDrives=True).execute()
     doc_id = file["id"]
 
-    # Step 2: Fetch doc length (to clear)
+    # 2) Fetch doc length (to clear)
     doc = docs.documents().get(documentId=doc_id).execute()
     doc_length = doc.get("body").get("content")[-1]["endIndex"]
 
-    # Step 3: Clear existing text
+    # 3) Clear existing text
     requests = []
     if doc_length > 2:
-        requests.append({
-            "deleteContentRange": {
-                "range": {"startIndex": 1, "endIndex": doc_length - 1}
-            }
-        })
+        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}})
 
-    # --- IMPORTANT: normalize/dedent the template before processing ---
+    # --- Normalize content ---
+    # Remove leading indentation from the triple-quoted template, drop leading/trailing blank lines
     norm = textwrap.dedent(content).strip("\n")
     raw_lines = norm.splitlines()
 
+    # --- Preprocess: insert a blank line BEFORE any "### ..." heading line ---
+    prepped_lines = []
+    for line in raw_lines:
+        trimmed = line.strip()
+        if trimmed.startswith("###"):
+            prepped_lines.append("")   # ensures a blank paragraph above the section
+        prepped_lines.append(line)
+
     insert_index = 1
-    para_ranges = []   # (start, end, kind)
-    list_groups = []   # (group_start, group_end)
+    para_ranges = []   # tuples: (start, end, kind) where kind in {"H1","H2","NORMAL","BULLET"}
+    list_groups = []   # tuples: (group_start, group_end)
     in_list = False
     group_start = None
 
     def insert_line(txt: str):
         nonlocal insert_index, requests
+        # Always end with newline so ranges include it
         if not txt.endswith("\n"):
             txt += "\n"
         start = insert_index
@@ -139,17 +141,22 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         insert_index = end
         return start, end
 
-    for i, line in enumerate(raw_lines):
-        # Skip truly blank lines but close any open list
-        if not line.strip():
+    for i, line in enumerate(prepped_lines):
+        trimmed = line.strip()
+
+        # Handle blank lines (including the ones we injected)
+        if not trimmed:
+            # Close any open list group
             if in_list:
                 list_groups.append((group_start, insert_index))
                 in_list = False
                 group_start = None
+            # Actually insert the blank paragraph
+            insert_line("")  # writes just "\n"
             continue
 
-        trimmed = line.strip()
-        is_h1 = (i == 0)
+        # Decide kinds
+        is_h1 = (i == 0)  # first non-blank line in prepped_lines won't be the injected blank
         is_h2 = trimmed.endswith(":")
         is_bullet = trimmed.startswith("- ")
 
@@ -170,7 +177,8 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
 
             if is_h1:
                 para_ranges.append((start, end, "H1"))
-            elif is_h2:
+            elif is_h2 or trimmed.startswith("###"):
+                # Treat "### ..." as a section heading (HEADING_2 by default)
                 para_ranges.append((start, end, "H2"))
             else:
                 para_ranges.append((start, end, "NORMAL"))
@@ -178,7 +186,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     if in_list:
         list_groups.append((group_start, insert_index))
 
-    # Styles
+    # --- Apply paragraph styles ---
     for start, end, kind in para_ranges:
         if kind == "H1":
             requests.append({
@@ -205,7 +213,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                 }
             })
 
-    # Apply bullets once per contiguous group
+    # --- Apply bullets once per contiguous group ---
     for gs, ge in list_groups:
         requests.append({
             "createParagraphBullets": {
@@ -214,7 +222,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             }
         })
 
-    # Step 5: Execute
+    # 5) Execute
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
     return doc_id
 
