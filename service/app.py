@@ -114,52 +114,53 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     # 3) Clear existing text
     requests = []
     if doc_length > 2:
-        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}})
-
-        # ----------------------------------------------------------------
-        # HEADER: same on all pages
-        # ----------------------------------------------------------------
-        docs.documents().batchUpdate(documentId=doc_id, body={"requests": [
-            {"updateDocumentStyle": {
-                "documentStyle": {"useFirstPageHeaderFooter": False},
-                "fields": "useFirstPageHeaderFooter"
-            }},
-            {"createHeader": {"type": "DEFAULT"}}
-        ]}).execute()
-        
-        # then immediately insert your logo into that DEFAULT header,
-        # exactly as you do now with insertInlineImage / updateParagraphStyle.
-
+        requests.append({
+            "deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}
+        })
+    
+    # Apply the delete (if any), then reset 'requests'
+    if requests:
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+    requests = []
+    
+    # ----------------------------------------------------------------
+    # HEADER: same on all pages — always run this, not only when doc had content
+    # ----------------------------------------------------------------
+    phase1 = docs.documents().batchUpdate(documentId=doc_id, body={"requests": [
+        {"updateDocumentStyle": {
+            "documentStyle": {"useFirstPageHeaderFooter": False},
+            "fields": "useFirstPageHeaderFooter"
+        }},
+        {"createHeader": {"type": "DEFAULT"}}
+    ]}).execute()
+    
+    # Extract the headerId from the replies
     header_id = None
-    for reply in phase1.get("replies", []):
-        if "createHeader" in reply:
-            header_id = reply["createHeader"]["headerId"]
+    for r in phase1.get("replies", []):
+        ch = r.get("createHeader")
+        if ch and ch.get("type") == "DEFAULT":
+            header_id = ch.get("headerId")
             break
-
-    # Insert logo in the header (top-left). We place it at index 0.
+    
+    # Insert the logo into the DEFAULT header
     if header_id and LOGO_URI:
-        header_reqs = [
-            # Insert an image at the very start of the header
-            {
-                "insertInlineImage": {
-                    "location": {"segmentId": header_id, "index": 0},
-                    "uri": LOGO_URI,
-                    "objectSize": {
-                        "width":  {"magnitude": LOGO_WIDTH_PT,  "unit": "PT"},
-                        "height": {"magnitude": LOGO_HEIGHT_PT, "unit": "PT"},
-                    },
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": [
+            {"insertText": {"location": {"segmentId": header_id, "index": 0}, "text": "\n"}},
+            {"insertInlineImage": {
+                "location": {"segmentId": header_id, "index": 1},
+                "uri": LOGO_URI,
+                "objectSize": {
+                    "width":  {"magnitude": LOGO_WIDTH_PT,  "unit": "PT"},
+                    "height": {"magnitude": LOGO_HEIGHT_PT, "unit": "PT"}
                 }
-            },
-            # Ensure the header paragraph is left-aligned (START)
-            {
-                "updateParagraphStyle": {
-                    "range": {"segmentId": header_id, "startIndex": 0, "endIndex": 1},
-                    "paragraphStyle": {"alignment": "START"},
-                    "fields": "alignment",
-                }
-            },
-        ]
-        docs.documents().batchUpdate(documentId=doc_id, body={"requests": header_reqs}).execute()
+            }},
+            {"updateParagraphStyle": {
+                "range": {"segmentId": header_id, "startIndex": 0, "endIndex": 2},
+                "paragraphStyle": {"alignment": "START"},
+                "fields": "alignment"
+            }},
+        ]}).execute()
+
 
     # --- Normalize content ---
     # Remove leading indentation from the triple-quoted template, drop leading/trailing blank lines
