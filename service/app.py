@@ -9,6 +9,11 @@ from pydantic import BaseModel
 from collections import Counter
 import textwrap
 
+# ----- Branding -----
+LOGO_URI = "https://drive.google.com/uc?id=1tGh_4cmuRhLOX4ZYcQsaX_F1bcP0x6L4"
+LOGO_WIDTH_PT = 120   # ~1.67 in (adjust as you like)
+LOGO_HEIGHT_PT = 36   # ~0.5 in  (keep aspect ratio-ish)
+# End of Logo branding
 
 IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
 DEFAULT_IMPERSONATION_SUBJECT = os.environ.get("DEFAULT_IMPERSONATION_SUBJECT")  # optional fallback
@@ -111,6 +116,50 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     if doc_length > 2:
         requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}})
 
+    # ----------------------------------------------------------------
+    # HEADER: enable headers and create a DEFAULT header on all pages
+    # ----------------------------------------------------------------
+    requests.append({
+        "updateDocumentStyle": {
+            "documentStyle": {"useFirstPageHeaderFooter": True},
+            "fields": "useFirstPageHeaderFooter",
+        }
+    })
+    requests.append({"createHeader": {"type": "DEFAULT"}})
+
+    # Execute phase 1 so we can read the headerId
+    phase1 = docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+    header_id = None
+    for reply in phase1.get("replies", []):
+        if "createHeader" in reply:
+            header_id = reply["createHeader"]["headerId"]
+            break
+
+    # Insert logo in the header (top-left). We place it at index 0.
+    if header_id and LOGO_URI:
+        header_reqs = [
+            # Insert an image at the very start of the header
+            {
+                "insertInlineImage": {
+                    "location": {"segmentId": header_id, "index": 0},
+                    "uri": LOGO_URI,
+                    "objectSize": {
+                        "width":  {"magnitude": LOGO_WIDTH_PT,  "unit": "PT"},
+                        "height": {"magnitude": LOGO_HEIGHT_PT, "unit": "PT"},
+                    },
+                }
+            },
+            # Ensure the header paragraph is left-aligned (START)
+            {
+                "updateParagraphStyle": {
+                    "range": {"segmentId": header_id, "startIndex": 0, "endIndex": 1},
+                    "paragraphStyle": {"alignment": "START"},
+                    "fields": "alignment",
+                }
+            },
+        ]
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": header_reqs}).execute()
+
     # --- Normalize content ---
     # Remove leading indentation from the triple-quoted template, drop leading/trailing blank lines
     norm = textwrap.dedent(content).strip("\n")
@@ -125,6 +174,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         prepped_lines.append(line)
 
     insert_index = 1
+    requests = []  # <- restart requests for body content now
     para_ranges = []   # tuples: (start, end, kind) where kind in {"H1","H2","NORMAL","BULLET"}
     list_groups = []   # tuples: (group_start, group_end)
     in_list = False
@@ -222,9 +272,12 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             }
         })
 
-    # 5) Execute
-    docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+    # 5) Execute body insertions & styles
+    if requests:
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
     return doc_id
+
 
 
 
