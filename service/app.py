@@ -166,11 +166,11 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         {"createHeader": {"type": "DEFAULT"}}
     ]}).execute()
     
-    # Extract the headerId from the replies
+    # put the fixed snippet here
     header_id = None
     for r in phase1.get("replies", []):
         ch = r.get("createHeader")
-        if ch and ch.get("type") == "DEFAULT":
+        if ch:
             header_id = ch.get("headerId")
             break
     
