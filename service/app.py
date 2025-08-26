@@ -8,6 +8,10 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
 import textwrap
+import re
+
+# 
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
 # ----- Branding -----
 LOGO_URI = "https://drive.google.com/uc?id=1tGh_4cmuRhLOX4ZYcQsaX_F1bcP0x6L4"
@@ -23,6 +27,8 @@ API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
 app = FastAPI(title="Recruiting Sheet Insights")
 
 # Below are helper functions
+
+
 
 def _extract_subject_from_request(req: Request) -> Optional[str]:
     """
@@ -44,6 +50,32 @@ def _extract_subject_from_request(req: Request) -> Optional[str]:
         return DEFAULT_IMPERSONATION_SUBJECT.strip()
 
     return None
+
+def strip_heading_markers(s: str):
+    # returns (clean_text, kind_override)
+    if s.startswith("### "):
+        return s[4:], "H3"
+    if s.startswith("## "):
+        return s[3:], "H2"
+    if s.startswith("# "):
+        return s[2:], "H1"
+    return s, None
+
+def strip_inline_bold_and_spans(s: str):
+    """Return (clean_text, spans) where spans are (start,end) in CLEAN text."""
+    spans = []
+    out = []
+    idx = 0
+    for m in BOLD_RE.finditer(s):
+        out.append(s[idx:m.start()])           # text before
+        bold_text = m.group(1)                 # without ** **
+        start_in_out = sum(len(x) for x in out)
+        out.append(bold_text)
+        end_in_out = start_in_out + len(bold_text)
+        spans.append((start_in_out, end_in_out))
+        idx = m.end()
+    out.append(s[idx:])
+    return "".join(out), spans
 
 def get_clients(subject: Optional[str] = None): # client builder accepts now optional subjects for impersonation
     """
@@ -164,8 +196,8 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
 
     # --- Normalize content ---
     # Remove leading indentation from the triple-quoted template, drop leading/trailing blank lines
-    norm = textwrap.dedent(content).strip("\n")
-    raw_lines = norm.splitlines()
+    norm_txt = textwrap.dedent(content).strip("\n")
+    raw_lines = norm_txt.splitlines()
 
     # --- Preprocess: insert a blank line BEFORE any "### ..." heading line ---
     prepped_lines = []
@@ -177,8 +209,9 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
 
     insert_index = 1
     requests = []  # <- restart requests for body content now
-    para_ranges = []   # tuples: (start, end, kind) where kind in {"H1","H2","NORMAL","BULLET"}
+    para_ranges = []   # tuples: (start, end, kind) where kind in {"H1","H2","H3","NORMAL","BULLET"}
     list_groups = []   # tuples: (group_start, group_end)
+    inline_bold_spans = []  # collect absolute (start,end) ranges for bold  <-- added
     in_list = False
     group_start = None
 
@@ -207,14 +240,27 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             insert_line("")  # writes just "\n"
             continue
 
-        # Decide kinds
-        is_h1 = (i == 0)  # first non-blank line in prepped_lines won't be the injected blank
-        is_h2 = trimmed.endswith(":")
+        # --------- REPLACED LOOP BODY (Markdown → Docs) ----------
         is_bullet = trimmed.startswith("- ")
 
-        # For bullets, strip the "- " before inserting to avoid "• - Item"
-        text_to_insert = trimmed[2:] if is_bullet else trimmed
-        start, end = insert_line(text_to_insert)
+        # handle Markdown headings first
+        clean, kind_override = strip_heading_markers(trimmed)
+
+        # first non-blank line becomes H1 if no explicit # heading
+        is_h1_by_position = (i == 0 and kind_override is None)
+        is_h2_by_colon = clean.endswith(":")
+
+        # bullets: remove '- ' before inserting; otherwise use cleaned text
+        text_for_insert = clean[2:] if is_bullet else clean
+
+        # inline bold: strip ** and collect spans relative to the cleaned line
+        text_for_insert, bold_spans_rel = strip_inline_bold_and_spans(text_for_insert)
+
+        start, end = insert_line(text_for_insert)
+
+        # record absolute bold ranges for later updateTextStyle
+        for bstart, bend in bold_spans_rel:
+            inline_bold_spans.append((start + bstart, start + bend))
 
         if is_bullet:
             if not in_list:
@@ -227,13 +273,15 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                 in_list = False
                 group_start = None
 
-            if is_h1:
+            if kind_override:              # H1/H2/H3 from #,##,###
+                para_ranges.append((start, end, kind_override))
+            elif is_h1_by_position:        # fallback: first line is H1
                 para_ranges.append((start, end, "H1"))
-            elif is_h2 or trimmed.startswith("###"):
-                # Treat "### ..." as a section heading (HEADING_2 by default)
+            elif is_h2_by_colon:
                 para_ranges.append((start, end, "H2"))
             else:
                 para_ranges.append((start, end, "NORMAL"))
+        # --------- END REPLACED LOOP BODY ----------
 
     if in_list:
         list_groups.append((group_start, insert_index))
@@ -256,6 +304,14 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                     "fields": "namedStyleType"
                 }
             })
+        elif kind == "H3":
+            requests.append({
+                "updateParagraphStyle": {
+                    "range": {"startIndex": start, "endIndex": end},
+                    "paragraphStyle": {"namedStyleType": "HEADING_3"},
+                    "fields": "namedStyleType"
+                }
+            })
         elif kind == "NORMAL":
             requests.append({
                 "updateParagraphStyle": {
@@ -271,6 +327,16 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             "createParagraphBullets": {
                 "range": {"startIndex": gs, "endIndex": ge},
                 "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+            }
+        })
+
+    # --- Apply inline bold (added) ---
+    for bs, be in inline_bold_spans:
+        requests.append({
+            "updateTextStyle": {
+                "range": {"startIndex": bs, "endIndex": be},
+                "textStyle": {"bold": True},
+                "fields": "bold"
             }
         })
 
