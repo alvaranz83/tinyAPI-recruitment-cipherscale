@@ -7,6 +7,7 @@ from googleapiclient.discovery import build
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
+import textwrap
 
 
 IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header name you’ll set from your app / gateway
@@ -93,6 +94,8 @@ def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str:
     """Always create a new subfolder inside parent folder."""
     return create_folder(drive, subfolder_name, parent_id)
 
+
+
 def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
     # Step 1: Create the Google Doc in the target folder
     file_metadata = {
@@ -116,28 +119,68 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
             }
         })
 
-    # Step 4: Insert line by line at the END of doc
-    lines = [line.rstrip() for line in content.strip().split("\n")]
+    # --- IMPORTANT: normalize/dedent the template before processing ---
+    norm = textwrap.dedent(content).strip("\n")
+    raw_lines = norm.splitlines()
 
     insert_index = 1
-    for i, line in enumerate(lines):
+    para_ranges = []   # (start, end, kind)
+    list_groups = []   # (group_start, group_end)
+    in_list = False
+    group_start = None
+
+    def insert_line(txt: str):
+        nonlocal insert_index, requests
+        if not txt.endswith("\n"):
+            txt += "\n"
+        start = insert_index
+        end = start + len(txt)
+        requests.append({"insertText": {"location": {"index": start}, "text": txt}})
+        insert_index = end
+        return start, end
+
+    for i, line in enumerate(raw_lines):
+        # Skip truly blank lines but close any open list
         if not line.strip():
+            if in_list:
+                list_groups.append((group_start, insert_index))
+                in_list = False
+                group_start = None
             continue
 
-        text = line + "\n"
+        trimmed = line.strip()
+        is_h1 = (i == 0)
+        is_h2 = trimmed.endswith(":")
+        is_bullet = trimmed.startswith("- ")
 
-        # Insert at the end of the doc each time
-        requests.append({
-            "insertText": {"location": {"index": insert_index}, "text": text}
-        })
+        # For bullets, strip the "- " before inserting to avoid "• - Item"
+        text_to_insert = trimmed[2:] if is_bullet else trimmed
+        start, end = insert_line(text_to_insert)
 
-        # Figure out style range
-        start = insert_index
-        end = insert_index + len(text)
-        insert_index = end  # update pointer for style ranges only
+        if is_bullet:
+            if not in_list:
+                in_list = True
+                group_start = start
+            para_ranges.append((start, end, "BULLET"))
+        else:
+            if in_list:
+                list_groups.append((group_start, insert_index))
+                in_list = False
+                group_start = None
 
-        # Apply formatting
-        if i == 0:
+            if is_h1:
+                para_ranges.append((start, end, "H1"))
+            elif is_h2:
+                para_ranges.append((start, end, "H2"))
+            else:
+                para_ranges.append((start, end, "NORMAL"))
+
+    if in_list:
+        list_groups.append((group_start, insert_index))
+
+    # Styles
+    for start, end, kind in para_ranges:
+        if kind == "H1":
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -145,7 +188,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                     "fields": "namedStyleType"
                 }
             })
-        elif line.endswith(":"):
+        elif kind == "H2":
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -153,14 +196,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                     "fields": "namedStyleType"
                 }
             })
-        elif line.startswith("- "):
-            requests.append({
-                "createParagraphBullets": {
-                    "range": {"startIndex": start, "endIndex": end},
-                    "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
-                }
-            })
-        else:
+        elif kind == "NORMAL":
             requests.append({
                 "updateParagraphStyle": {
                     "range": {"startIndex": start, "endIndex": end},
@@ -169,10 +205,19 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
                 }
             })
 
+    # Apply bullets once per contiguous group
+    for gs, ge in list_groups:
+        requests.append({
+            "createParagraphBullets": {
+                "range": {"startIndex": gs, "endIndex": ge},
+                "bulletPreset": "BULLET_DISC_CIRCLE_SQUARE"
+            }
+        })
+
     # Step 5: Execute
     docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
-
     return doc_id
+
 
 
 
