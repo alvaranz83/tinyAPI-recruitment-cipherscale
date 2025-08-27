@@ -752,6 +752,77 @@ def create_scoring(request: Request, body: CreateScoringRequest):
     }
 
 
+class CreateDepartmentsRequest(BaseModel):
+    names: List[str]
+    userEmail: Optional[str] = None  # impersonation
+
+@app.post("/departments/create")
+def create_departments(request: Request, body: CreateDepartmentsRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+
+    # 1. Look for "Departments" folder under Hiring
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false and name='Departments' "
+        f"and '{HIRING_FOLDER_ID}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if results.get("files"):
+        departments_folder_id = results["files"][0]["id"]
+        created_root = False
+    else:
+        # Create "Departments" folder
+        departments_folder_id = create_folder(drive, "Departments", HIRING_FOLDER_ID)
+        created_root = True
+
+    created_departments = []
+    for dept in body.names:
+        # Check if department folder already exists
+        query = (
+            "mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{dept}' "
+            f"and '{departments_folder_id}' in parents"
+        )
+        existing = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
+
+        if existing.get("files"):
+            created_departments.append({
+                "name": dept,
+                "id": existing["files"][0]["id"],
+                "created": False
+            })
+        else:
+            dept_id = create_folder(drive, dept, departments_folder_id)
+            created_departments.append({
+                "name": dept,
+                "id": dept_id,
+                "created": True
+            })
+
+    return {
+        "message": "Departments processed successfully",
+        "departmentsFolderId": departments_folder_id,
+        "createdRootFolder": created_root,
+        "departments": created_departments
+    }
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
