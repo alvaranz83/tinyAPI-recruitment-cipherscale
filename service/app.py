@@ -831,6 +831,82 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
     }
 
 
+class HiringFlowStage(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class HiringFlow(BaseModel):
+    flowName: str
+    stages: List[HiringFlowStage]
+
+class CreateHiringFlowsRequest(BaseModel):
+    flows: List[HiringFlow]
+    userEmail: Optional[str] = None  # impersonation
+
+
+@app.post("/HiringFlows/create")
+def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+
+    # 1. Look for (or create) "Hiring Flows" folder under Hiring
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false and name='Hiring Flows' "
+        f"and '{HIRING_FOLDER_ID}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name,parents)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if results.get("files"):
+        flows_folder_id = results["files"][0]["id"]
+    else:
+        flows_folder_id = create_folder(drive, "Hiring Flows", HIRING_FOLDER_ID)
+
+    created_flows = []
+    for flow in body.flows:
+        # Each flow gets its own Google Doc
+        stages_text = "\n".join(
+            [f"- **{s.name}**: {s.description or ''}" for s in flow.stages]
+        )
+
+        content = f"""
+        # Hiring Flow – {flow.flowName}
+
+        Below are the defined stages for this hiring flow:
+
+        {stages_text}
+
+        ---
+
+        Notes:
+        - Flows are customizable.
+        - Stages can be adapted per role/department.
+        """
+
+        file_id = create_google_doc(docs, drive, flows_folder_id, f"Hiring Flow - {flow.flowName}", content)
+
+        created_flows.append({
+            "flowName": flow.flowName,
+            "fileId": file_id,
+            "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+        })
+
+    return {
+        "message": "Hiring flows created successfully",
+        "flowsFolderId": flows_folder_id,
+        "createdFlows": created_flows
+    }
+    
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
