@@ -831,30 +831,25 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
     }
 
 
-class HiringFlowStage(BaseModel):
-    name: str
-    description: Optional[str] = None
-
 class HiringFlow(BaseModel):
     flowName: str
-    stages: List[HiringFlowStage]
+    stages: List[str]
 
 class CreateHiringFlowsRequest(BaseModel):
     flows: List[HiringFlow]
     userEmail: Optional[str] = None  # impersonation
 
-
 @app.post("/HiringFlows/create")
 def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
-    _, drive, docs = get_clients(subject)
+    _, drive, _ = get_clients(subject)
 
     HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
     if not HIRING_FOLDER_ID:
         raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
 
-    # 1. Look for (or create) "Hiring Flows" folder under Hiring
+    # 1. Check (or create) "Hiring Flows" folder under Hiring
     query = (
         "mimeType='application/vnd.google-apps.folder' "
         "and trashed=false and name='Hiring Flows' "
@@ -869,42 +864,73 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
 
     if results.get("files"):
         flows_folder_id = results["files"][0]["id"]
+        created_root = False
     else:
         flows_folder_id = create_folder(drive, "Hiring Flows", HIRING_FOLDER_ID)
+        created_root = True
 
     created_flows = []
     for flow in body.flows:
-        # Each flow gets its own Google Doc
-        stages_text = "\n".join(
-            [f"- **{s.name}**: {s.description or ''}" for s in flow.stages]
+        # 2. Check (or create) flow subfolder
+        query = (
+            "mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{flow.flowName}' "
+            f"and '{flows_folder_id}' in parents"
         )
+        existing_flow = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
 
-        content = f"""
-        # Hiring Flow – {flow.flowName}
+        if existing_flow.get("files"):
+            flow_folder_id = existing_flow["files"][0]["id"]
+            flow_created = False
+        else:
+            flow_folder_id = create_folder(drive, flow.flowName, flows_folder_id)
+            flow_created = True
 
-        Below are the defined stages for this hiring flow:
+        # 3. Create stage subfolders
+        created_stages = []
+        for stage in flow.stages:
+            query = (
+                "mimeType='application/vnd.google-apps.folder' "
+                f"and trashed=false and name='{stage}' "
+                f"and '{flow_folder_id}' in parents"
+            )
+            existing_stage = drive.files().list(
+                q=query,
+                fields="files(id,name)",
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True
+            ).execute()
 
-        {stages_text}
+            if existing_stage.get("files"):
+                stage_id = existing_stage["files"][0]["id"]
+                stage_created = False
+            else:
+                stage_id = create_folder(drive, stage, flow_folder_id)
+                stage_created = True
 
-        ---
-
-        Notes:
-        - Flows are customizable.
-        - Stages can be adapted per role/department.
-        """
-
-        file_id = create_google_doc(docs, drive, flows_folder_id, f"Hiring Flow - {flow.flowName}", content)
+            created_stages.append({
+                "name": stage,
+                "id": stage_id,
+                "created": stage_created
+            })
 
         created_flows.append({
             "flowName": flow.flowName,
-            "fileId": file_id,
-            "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+            "id": flow_folder_id,
+            "created": flow_created,
+            "stages": created_stages
         })
 
     return {
-        "message": "Hiring flows created successfully",
+        "message": "Hiring flows processed successfully",
         "flowsFolderId": flows_folder_id,
-        "createdFlows": created_flows
+        "createdRootFolder": created_root,
+        "flows": created_flows
     }
     
 
