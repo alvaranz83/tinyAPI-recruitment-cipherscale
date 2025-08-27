@@ -766,7 +766,7 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
     if not HIRING_FOLDER_ID:
         raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
 
-    # 1. Look for "Departments" folder under Hiring
+    # 1. Look ONLY for "Departments" folder directly under Hiring
     query = (
         "mimeType='application/vnd.google-apps.folder' "
         "and trashed=false and name='Departments' "
@@ -774,22 +774,29 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
     )
     results = drive.files().list(
         q=query,
-        fields="files(id,name)",
+        fields="files(id,name,parents)",
         includeItemsFromAllDrives=True,
         supportsAllDrives=True
     ).execute()
 
+    departments_folder_id = None
+    created_root = False
+
     if results.get("files"):
-        departments_folder_id = results["files"][0]["id"]
-        created_root = False
-    else:
-        # Create "Departments" folder
+        # Always pick the one that is directly inside Hiring
+        for f in results["files"]:
+            if HIRING_FOLDER_ID in f.get("parents", []):
+                departments_folder_id = f["id"]
+                break
+
+    if not departments_folder_id:
+        # Create "Departments" folder if not found directly under Hiring
         departments_folder_id = create_folder(drive, "Departments", HIRING_FOLDER_ID)
         created_root = True
 
     created_departments = []
     for dept in body.names:
-        # Check if department folder already exists
+        # Check if department folder already exists inside "Departments"
         query = (
             "mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{dept}' "
@@ -822,6 +829,7 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
         "createdRootFolder": created_root,
         "departments": created_departments
     }
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
