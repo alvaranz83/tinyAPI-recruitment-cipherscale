@@ -523,15 +523,15 @@ def create_position(request: Request, body: PositionRequest):
             "created": False
         }
 
-    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
-    if not HIRING_FOLDER_ID:
-        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
     # Step 0: Ensure department folder exists
     query = (
         f"mimeType='application/vnd.google-apps.folder' "
         f"and trashed=false and name='{department}' "
-        f"and '{HIRING_FOLDER_ID}' in parents"
+        f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
     )
     results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
     items = results.get("files", [])
@@ -539,7 +539,7 @@ def create_position(request: Request, body: PositionRequest):
     if items:
         department_folder_id = items[0]["id"]
     else:
-        department_folder_id = create_folder(drive, department, HIRING_FOLDER_ID)
+        department_folder_id = create_folder(drive, department, DEPARTMENTS_FOLDER_ID)
 
     # Step 1: Check if role folder already exists
     query = (
@@ -575,17 +575,17 @@ def list_positions(request: Request, department: Optional[str] = None):
     subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
-    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
-    if not HIRING_FOLDER_ID:
-        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
     # If department specified, check inside it
-    parent_id = HIRING_FOLDER_ID
+    parent_id = DEPARTMENTS_FOLDER_ID
     if department:
         query = (
             f"mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{department}' "
-            f"and '{HIRING_FOLDER_ID}' in parents"
+            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
         )
         results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
         items = results.get("files", [])
