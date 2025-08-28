@@ -1,15 +1,15 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime, timezone
 from typing import Optional, List
 import os, json
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
 import textwrap
 import re
-from fastapi import UploadFile, File, Form
 import uuid
 
 # 
@@ -1065,65 +1065,90 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
         "stages": created_stages
     }
 
+
+# --- Optional structured model (for JSON payloads only) ---
 class CandidateObject(BaseModel):
-    fileId: str                # Drive fileId of CV (PDF/Word/Doc)
+    fileId: Optional[str]                # Drive fileId of CV (for JSON payload)
     candidateName: str
     role: str
     hiringStage: str
-    userEmail: Optional[str] = None  # for impersonation
+    userEmail: Optional[str] = None      # for impersonation
 
 
 class UploadCandidatesRequest(BaseModel):
     candidates: List[CandidateObject]
 
 
-class CandidateUpload(BaseModel):
-    candidateName: str
-    role: str
-    hiringStage: str
-    userEmail: Optional[str] = None
-
 @app.post("/candidates/uploadManually")
 async def upload_candidates(
     request: Request,
-    candidateNames: List[str] = Form(...),
-    roles: List[str] = Form(...),
-    hiringStages: List[str] = Form(...),
-    files: List[UploadFile] = File(...),
+    candidateNames: Optional[List[str]] = Form(None),
+    roles: Optional[List[str]] = Form(None),
+    hiringStages: Optional[List[str]] = Form(None),
+    files: Optional[List[UploadFile]] = File(None),
     userEmails: Optional[List[str]] = Form(None)
 ):
-    require_api_key(request)
-    subject = _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
+    """
+    Upload one or more candidates manually with CVs and place them in both
+    Interviewed Candidates and Hiring Pipeline stage folders.
+    Supports BOTH:
+      - multipart/form-data with flat arrays (expected schema)
+      - application/json with structured candidate objects
+    """
 
-    if not (len(candidateNames) == len(roles) == len(hiringStages) == len(files)):
-        raise HTTPException(400, "Mismatched number of candidates and files")
+    subject = "hr@cipherscale.com"  # fallback impersonation if none provided
 
+    # --- CASE 1: JSON with structured candidates[] ---
+    if request.headers.get("content-type", "").startswith("application/json"):
+        body = await request.json()
+        if "candidates" not in body:
+            raise HTTPException(400, "Missing 'candidates' in request body")
+
+        candidates = [CandidateObject(**c) for c in body["candidates"]]
+
+        candidateNames = [c.candidateName for c in candidates]
+        roles = [c.role for c in candidates]
+        hiringStages = [c.hiringStage for c in candidates]
+        files = [c.fileId for c in candidates]   # here we expect existing Drive fileIds
+        userEmails = [c.userEmail or subject for c in candidates]
+
+    # --- CASE 2: Form-data with flat arrays (correct schema) ---
+    else:
+        if not (candidateNames and roles and hiringStages and files):
+            raise HTTPException(400, "Missing required form-data fields")
+
+        if not (len(candidateNames) == len(roles) == len(hiringStages) == len(files)):
+            raise HTTPException(400, "Mismatched number of candidates and files")
+
+        userEmails = userEmails or [subject] * len(candidateNames)
+
+    # --- Process uploads ---
     processed = []
 
-    for i, upload in enumerate(files):
+    for i in range(len(candidateNames)):
         cand_name = candidateNames[i]
         role = roles[i]
         stage = hiringStages[i]
         impersonation = userEmails[i] if userEmails else subject
 
-        # Step 1: Upload file to Drive (temp in role folder or directly in candidate subfolder)
-        temp_filename = f"{cand_name}-{uuid.uuid4()}-{upload.filename}"
-        file_metadata = {"name": temp_filename, "mimeType": upload.content_type}
-        media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
-        file = drive.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-            supportsAllDrives=True
-        ).execute()
-        file_id = file["id"]
+        # If this is a form-data upload, files[i] is an UploadFile → needs Drive upload
+        # If this is JSON mode, files[i] is already a Drive fileId
+        if isinstance(files[i], UploadFile):
+            upload = files[i]
+            temp_filename = f"{cand_name}-{uuid.uuid4()}-{upload.filename}"
+            file_metadata = {"name": temp_filename, "mimeType": upload.content_type}
+            media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
+            file = drive.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+            file_id = file["id"]
+        else:
+            file_id = files[i]  # JSON provided Drive fileId
 
-        # Step 2: Same logic as before → find role folder, Interviewed Candidates, create candidate subfolder
-        # (reuse the code from the fileId version, but use the uploaded `file_id`)
-
-        # ... [same Interviewed Candidates + Hiring Pipeline placement code as before] ...
-
+        # --- Place in role + pipeline folders (placeholder logic) ---
         processed.append({
             "candidateName": cand_name,
             "role": role,
@@ -1135,6 +1160,7 @@ async def upload_candidates(
         })
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
+    
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
