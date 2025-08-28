@@ -564,8 +564,7 @@ def create_position(request: Request, body: PositionRequest):
         "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
         "departmentFolderId": department_folder_id,
-        "created": True,
-        "nextAction": "Would you like me to also create the Job Description (JD), TA Screening Template, and Interview Scoring Rubric for this role?"
+        "created": True
     }
 
 
