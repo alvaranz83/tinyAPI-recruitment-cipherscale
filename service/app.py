@@ -1089,77 +1089,116 @@ async def upload_candidates(
     userEmails: Optional[List[str]] = Form(None)
 ):
     """
-    Upload one or more candidates manually with CVs and place them in both
-    Interviewed Candidates and Hiring Pipeline stage folders.
-    Supports BOTH:
-      - multipart/form-data with flat arrays (expected schema)
-      - application/json with structured candidate objects
+    Upload candidates manually and place CVs into:
+    1. Interviewed Candidates folder (under role)
+    2. Hiring Pipeline stage folder (under role)
     """
 
-    subject = "hr@cipherscale.com"  # fallback impersonation if none provided
+    subject = "hr@cipherscale.com"
+    _, drive, _ = get_clients(subject)
 
-    # --- CASE 1: JSON with structured candidates[] ---
+    # --- JSON mode ---
     if request.headers.get("content-type", "").startswith("application/json"):
         body = await request.json()
-        if "candidates" not in body:
-            raise HTTPException(400, "Missing 'candidates' in request body")
-
         candidates = [CandidateObject(**c) for c in body["candidates"]]
 
         candidateNames = [c.candidateName for c in candidates]
         roles = [c.role for c in candidates]
         hiringStages = [c.hiringStage for c in candidates]
-        files = [c.fileId for c in candidates]   # here we expect existing Drive fileIds
+        files = [c.fileId for c in candidates]
         userEmails = [c.userEmail or subject for c in candidates]
 
-    # --- CASE 2: Form-data with flat arrays (correct schema) ---
+    # --- Form-data mode ---
     else:
         if not (candidateNames and roles and hiringStages and files):
             raise HTTPException(400, "Missing required form-data fields")
-
         if not (len(candidateNames) == len(roles) == len(hiringStages) == len(files)):
             raise HTTPException(400, "Mismatched number of candidates and files")
-
         userEmails = userEmails or [subject] * len(candidateNames)
 
-    # --- Process uploads ---
     processed = []
 
+    # --- For each candidate ---
     for i in range(len(candidateNames)):
         cand_name = candidateNames[i]
         role = roles[i]
         stage = hiringStages[i]
-        impersonation = userEmails[i] if userEmails else subject
 
-        # If this is a form-data upload, files[i] is an UploadFile → needs Drive upload
-        # If this is JSON mode, files[i] is already a Drive fileId
+        # 1. Locate the role folder under Software Engineering
+        DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{role}' "
+            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
+        )
+        role_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        if not role_results.get("files"):
+            raise HTTPException(404, f"Role folder '{role}' not found under Departments")
+        role_folder_id = role_results["files"][0]["id"]
+
+        # 2. Ensure Interviewed Candidates subfolder exists
+        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Interviewed Candidates' and '{role_folder_id}' in parents"
+        interviewed = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        if interviewed.get("files"):
+            interviewed_id = interviewed["files"][0]["id"]
+        else:
+            interviewed_id = create_folder(drive, "Interviewed Candidates", role_folder_id)
+
+        # 3. Ensure Hiring Pipeline/<Stage> exists
+        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_folder_id}' in parents"
+        pipeline = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        if pipeline.get("files"):
+            pipeline_id = pipeline["files"][0]["id"]
+        else:
+            pipeline_id = create_folder(drive, "Hiring Pipeline", role_folder_id)
+
+        # Stage subfolder
+        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
+        stage_result = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        if stage_result.get("files"):
+            stage_id = stage_result["files"][0]["id"]
+        else:
+            stage_id = create_folder(drive, stage, pipeline_id)
+
+        # 4. Upload file if form-data, otherwise reuse fileId
         if isinstance(files[i], UploadFile):
             upload = files[i]
-            temp_filename = f"{cand_name}-{uuid.uuid4()}-{upload.filename}"
-            file_metadata = {"name": temp_filename, "mimeType": upload.content_type}
+            file_metadata = {"name": f"{cand_name} - CV", "parents": [interviewed_id]}
             media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
             file = drive.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields="id",
+                fields="id,parents",
                 supportsAllDrives=True
             ).execute()
             file_id = file["id"]
         else:
-            file_id = files[i]  # JSON provided Drive fileId
+            # JSON mode: just copy existing fileId into Interviewed Candidates
+            file_id = files[i]
+            drive.files().update(
+                fileId=file_id,
+                addParents=interviewed_id,
+                supportsAllDrives=True,
+                fields="id,parents"
+            ).execute()
 
-        # --- Place in role + pipeline folders (placeholder logic) ---
+        # Also link into pipeline stage folder
+        drive.files().update(
+            fileId=file_id,
+            addParents=stage_id,
+            supportsAllDrives=True,
+            fields="id,parents"
+        ).execute()
+
         processed.append({
             "candidateName": cand_name,
             "role": role,
             "stage": stage,
-            "foldersUpdated": [
-                f"Interviewed Candidates/{cand_name}",
-                f"Hiring Pipeline/{stage}"
-            ]
+            "foldersUpdated": [interviewed_id, stage_id]
         })
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
+
     
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
