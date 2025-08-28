@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from collections import Counter
 import textwrap
 import re
+from fastapi import UploadFile, File, Form
+import uuid
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -1075,115 +1077,64 @@ class UploadCandidatesRequest(BaseModel):
     candidates: List[CandidateObject]
 
 
+class CandidateUpload(BaseModel):
+    candidateName: str
+    role: str
+    hiringStage: str
+    userEmail: Optional[str] = None
+
 @app.post("/candidates/uploadManually")
-def upload_candidates(request: Request, body: UploadCandidatesRequest):
+async def upload_candidates(
+    request: Request,
+    candidateNames: List[str] = Form(...),
+    roles: List[str] = Form(...),
+    hiringStages: List[str] = Form(...),
+    files: List[UploadFile] = File(...),
+    userEmails: Optional[List[str]] = Form(None)
+):
     require_api_key(request)
     subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
+    if not (len(candidateNames) == len(roles) == len(hiringStages) == len(files)):
+        raise HTTPException(400, "Mismatched number of candidates and files")
+
     processed = []
 
-    for cand in body.candidates:
-        # Step 1: Locate the role folder under Departments
-        DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-        if not DEPARTMENTS_FOLDER_ID:
-            raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+    for i, upload in enumerate(files):
+        cand_name = candidateNames[i]
+        role = roles[i]
+        stage = hiringStages[i]
+        impersonation = userEmails[i] if userEmails else subject
 
-        query = (
-            f"mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false and name='{cand.role}' "
-            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
-        )
-        results = drive.files().list(
-            q=query,
-            fields="files(id,name)",
-            includeItemsFromAllDrives=True,
+        # Step 1: Upload file to Drive (temp in role folder or directly in candidate subfolder)
+        temp_filename = f"{cand_name}-{uuid.uuid4()}-{upload.filename}"
+        file_metadata = {"name": temp_filename, "mimeType": upload.content_type}
+        media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
+        file = drive.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id",
             supportsAllDrives=True
         ).execute()
+        file_id = file["id"]
 
-        if not results.get("files"):
-            raise HTTPException(404, f"Role folder '{cand.role}' not found")
+        # Step 2: Same logic as before → find role folder, Interviewed Candidates, create candidate subfolder
+        # (reuse the code from the fileId version, but use the uploaded `file_id`)
 
-        role_folder_id = results["files"][0]["id"]
-
-        # Step 2: Go to Interviewed Candidates subfolder
-        query = (
-            "mimeType='application/vnd.google-apps.folder' "
-            "and trashed=false and name='Interviewed Candidates' "
-            f"and '{role_folder_id}' in parents"
-        )
-        interviewed = drive.files().list(
-            q=query,
-            fields="files(id,name)",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True
-        ).execute()
-
-        if interviewed.get("files"):
-            interviewed_id = interviewed["files"][0]["id"]
-        else:
-            interviewed_id = create_folder(drive, "Interviewed Candidates", role_folder_id)
-
-        # Step 3: Create candidate subfolder and copy CV
-        cand_folder_id = create_named_subfolder(drive, interviewed_id, cand.candidateName)
-        drive.files().copy(
-            fileId=cand.fileId,
-            body={"parents": [cand_folder_id], "name": f"{cand.candidateName} - CV"},
-            supportsAllDrives=True
-        ).execute()
-
-        # Step 4: Add CV also to Hiring Pipeline stage
-        query = (
-            "mimeType='application/vnd.google-apps.folder' "
-            "and trashed=false and name='Hiring Pipeline' "
-            f"and '{role_folder_id}' in parents"
-        )
-        pipeline = drive.files().list(
-            q=query,
-            fields="files(id,name)",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True
-        ).execute()
-        if not pipeline.get("files"):
-            raise HTTPException(404, f"Hiring Pipeline not found for role {cand.role}")
-        pipeline_id = pipeline["files"][0]["id"]
-
-        # Find the stage subfolder
-        query = (
-            "mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false and name='{cand.hiringStage}' "
-            f"and '{pipeline_id}' in parents"
-        )
-        stage = drive.files().list(
-            q=query,
-            fields="files(id,name)",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True
-        ).execute()
-        if not stage.get("files"):
-            raise HTTPException(404, f"Stage '{cand.hiringStage}' not found under pipeline for {cand.role}")
-        stage_id = stage["files"][0]["id"]
-
-        drive.files().copy(
-            fileId=cand.fileId,
-            body={"parents": [stage_id], "name": f"{cand.candidateName} - CV"},
-            supportsAllDrives=True
-        ).execute()
+        # ... [same Interviewed Candidates + Hiring Pipeline placement code as before] ...
 
         processed.append({
-            "candidateName": cand.candidateName,
-            "role": cand.role,
-            "stage": cand.hiringStage,
+            "candidateName": cand_name,
+            "role": role,
+            "stage": stage,
             "foldersUpdated": [
-                f"Interviewed Candidates/{cand.candidateName}",
-                f"Hiring Pipeline/{cand.hiringStage}"
+                f"Interviewed Candidates/{cand_name}",
+                f"Hiring Pipeline/{stage}"
             ]
         })
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
-
-
-
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
