@@ -1063,6 +1063,125 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
         "stages": created_stages
     }
 
+class CandidateObject(BaseModel):
+    fileId: str                # Drive fileId of CV (PDF/Word/Doc)
+    candidateName: str
+    role: str
+    hiringStage: str
+    userEmail: Optional[str] = None  # for impersonation
+
+
+class UploadCandidatesRequest(BaseModel):
+    candidates: List[CandidateObject]
+
+
+@app.post("/candidates/uploadManually")
+def upload_candidates(request: Request, body: UploadCandidatesRequest):
+    require_api_key(request)
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    processed = []
+
+    for cand in body.candidates:
+        # Step 1: Locate the role folder under Departments
+        DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+        if not DEPARTMENTS_FOLDER_ID:
+            raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{cand.role}' "
+            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
+        )
+        results = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
+
+        if not results.get("files"):
+            raise HTTPException(404, f"Role folder '{cand.role}' not found")
+
+        role_folder_id = results["files"][0]["id"]
+
+        # Step 2: Go to Interviewed Candidates subfolder
+        query = (
+            "mimeType='application/vnd.google-apps.folder' "
+            "and trashed=false and name='Interviewed Candidates' "
+            f"and '{role_folder_id}' in parents"
+        )
+        interviewed = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
+
+        if interviewed.get("files"):
+            interviewed_id = interviewed["files"][0]["id"]
+        else:
+            interviewed_id = create_folder(drive, "Interviewed Candidates", role_folder_id)
+
+        # Step 3: Create candidate subfolder and copy CV
+        cand_folder_id = create_named_subfolder(drive, interviewed_id, cand.candidateName)
+        drive.files().copy(
+            fileId=cand.fileId,
+            body={"parents": [cand_folder_id], "name": f"{cand.candidateName} - CV"},
+            supportsAllDrives=True
+        ).execute()
+
+        # Step 4: Add CV also to Hiring Pipeline stage
+        query = (
+            "mimeType='application/vnd.google-apps.folder' "
+            "and trashed=false and name='Hiring Pipeline' "
+            f"and '{role_folder_id}' in parents"
+        )
+        pipeline = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
+        if not pipeline.get("files"):
+            raise HTTPException(404, f"Hiring Pipeline not found for role {cand.role}")
+        pipeline_id = pipeline["files"][0]["id"]
+
+        # Find the stage subfolder
+        query = (
+            "mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{cand.hiringStage}' "
+            f"and '{pipeline_id}' in parents"
+        )
+        stage = drive.files().list(
+            q=query,
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute()
+        if not stage.get("files"):
+            raise HTTPException(404, f"Stage '{cand.hiringStage}' not found under pipeline for {cand.role}")
+        stage_id = stage["files"][0]["id"]
+
+        drive.files().copy(
+            fileId=cand.fileId,
+            body={"parents": [stage_id], "name": f"{cand.candidateName} - CV"},
+            supportsAllDrives=True
+        ).execute()
+
+        processed.append({
+            "candidateName": cand.candidateName,
+            "role": cand.role,
+            "stage": cand.hiringStage,
+            "foldersUpdated": [
+                f"Interviewed Candidates/{cand.candidateName}",
+                f"Hiring Pipeline/{cand.hiringStage}"
+            ]
+        })
+
+    return {"message": "Candidates uploaded successfully", "processed": processed}
+
 
 
 
