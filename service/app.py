@@ -933,6 +933,139 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
     }
     
 
+@app.get("/HiringFlows/read")
+def read_hiring_flows(request: Request):
+    require_api_key(request)
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+
+    # Locate "Hiring Flows" folder
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false and name='Hiring Flows' "
+        f"and '{HIRING_FOLDER_ID}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if not results.get("files"):
+        return {"message": "No Hiring Flows found", "flows": []}
+
+    flows_folder_id = results["files"][0]["id"]
+
+    # Get flows inside
+    flows = drive.files().list(
+        q=f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{flows_folder_id}' in parents",
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute().get("files", [])
+
+    flows_data = []
+    for flow in flows:
+        stages = drive.files().list(
+            q=f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{flow['id']}' in parents",
+            fields="files(id,name)",
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True
+        ).execute().get("files", [])
+        flows_data.append({
+            "flowName": flow["name"],
+            "id": flow["id"],
+            "stages": [s["name"] for s in stages]
+        })
+
+    return {
+        "message": "Hiring Flows read successfully",
+        "flowsFolderId": flows_folder_id,
+        "flows": flows_data
+    }
+
+
+class CreateHiringPipelineRequest(BaseModel):
+    hiringFlowName: str
+    positionId: str
+    userEmail: Optional[str] = None  # for impersonation
+
+@app.post("/HiringPipeline/create")
+def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    HIRING_FOLDER_ID = os.environ.get("HIRING_FOLDER_ID")
+    if not HIRING_FOLDER_ID:
+        raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
+
+    # Locate "Hiring Flows" folder
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false and name='Hiring Flows' "
+        f"and '{HIRING_FOLDER_ID}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if not results.get("files"):
+        raise HTTPException(404, "Hiring Flows folder not found")
+
+    flows_folder_id = results["files"][0]["id"]
+
+    # Find requested flow
+    query = (
+        "mimeType='application/vnd.google-apps.folder' "
+        f"and trashed=false and name='{body.hiringFlowName}' "
+        f"and '{flows_folder_id}' in parents"
+    )
+    flow_results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if not flow_results.get("files"):
+        raise HTTPException(404, f"Hiring Flow '{body.hiringFlowName}' not found")
+
+    flow_id = flow_results["files"][0]["id"]
+
+    # Get stages inside the flow
+    stages = drive.files().list(
+        q=f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{flow_id}' in parents",
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute().get("files", [])
+
+    # Create "Hiring Pipeline" inside job position
+    pipeline_id = create_named_subfolder(drive, body.positionId, "Hiring Pipeline")
+
+    created_stages = []
+    for stage in stages:
+        sid = create_named_subfolder(drive, pipeline_id, stage["name"])
+        created_stages.append({"name": stage["name"], "id": sid})
+
+    return {
+        "message": f"Hiring Pipeline created for position {body.positionId} using flow {body.hiringFlowName}",
+        "pipelineFolderId": pipeline_id,
+        "stages": created_stages
+    }
+
+
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
