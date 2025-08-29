@@ -11,6 +11,7 @@ from collections import Counter
 import textwrap
 import re
 import uuid
+import base64
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -30,7 +31,29 @@ app = FastAPI(title="Recruiting Sheet Insights")
 
 # Below are helper functions
 
+def prepare_candidate_file(file_ref: str) -> str:
+    """
+    Prepares candidate file for /candidates/uploadJson.
 
+    - If `file_ref` starts with "drive:", assumes it's already a Google Drive file ID.
+    - If `file_ref` is a local path, reads it and returns a base64-encoded string.
+
+    Args:
+        file_ref (str): Either "drive:<fileId>" or a local file path.
+
+    Returns:
+        str: "drive:<fileId>" if already in Drive, otherwise base64 string of file contents.
+    """
+    if file_ref.startswith("drive:"):
+        return file_ref  # Already a Drive reference
+
+    if not os.path.exists(file_ref):
+        raise FileNotFoundError(f"File not found: {file_ref}")
+
+    with open(file_ref, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    return encoded
 
 def _extract_subject_from_request(req: Request) -> Optional[str]:
     """
