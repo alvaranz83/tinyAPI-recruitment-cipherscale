@@ -1066,48 +1066,37 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
     }
 
 
-# --- Optional structured model (for JSON payloads only) ---
-class CandidateObject(BaseModel):
-    fileId: Optional[str]                # Drive fileId of CV (for JSON payload)
-    candidateName: str
-    role: str
-    hiringStage: str
-    userEmail: Optional[str] = None      # for impersonation
+class CandidateUpload(BaseModel):
+    candidateNames: List[str]
+    departments: List[str]
+    roles: List[str]
+    hiringStages: List[str]
+    files: List[str]  # maybe Drive file IDs or base64 if you want
+    userEmails: Optional[List[str]] = None
 
 
-class UploadCandidatesRequest(BaseModel):
-    candidates: List[CandidateObject]
-
-
-@app.post("/candidates/uploadManually")
-async def upload_candidates(
-    request: Request,
-    candidateNames: List[str] = Form(...),
-    departments: List[str] = Form(...),
-    roles: List[str] = Form(...),
-    hiringStages: List[str] = Form(...),
-    files: List[UploadFile] = File(...),
-    userEmails: Optional[List[str]] = Form(None),
-):
+@app.post("/candidates/uploadJson")
+async def upload_candidates_json(request: Request, body: CandidateUploadJSON):
     """
     Upload candidate CVs into:
     Departments/{Department}/{Role}/Hiring Pipeline/{Stage}
+    Using JSON payload (instead of multipart/form-data).
     """
-
     subject = "hr@cipherscale.com"
     _, drive, _ = get_clients(subject)
 
-    if not (len(candidateNames) == len(roles) == len(departments) == len(hiringStages) == len(files)):
+    # validate lengths
+    if not (len(body.candidateNames) == len(body.roles) == len(body.departments) == len(body.hiringStages) == len(body.files)):
         raise HTTPException(400, "Mismatched number of fields")
 
     processed = []
 
-    for i in range(len(candidateNames)):
-        cand_name = candidateNames[i]
-        role = roles[i]
-        dept = departments[i]
-        stage = hiringStages[i]
-        upload = files[i]
+    for i in range(len(body.candidateNames)):
+        cand_name = body.candidateNames[i]
+        role = body.roles[i]
+        dept = body.departments[i]
+        stage = body.hiringStages[i]
+        file_id_or_content = body.files[i]
 
         # 1. Locate department
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
@@ -1130,40 +1119,46 @@ async def upload_candidates(
         role_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not role_results.get("files"):
             raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
-        role_id = role_results["files"][0]["id"]
+        role_id = role_results.get("files")[0]["id"]
 
         # 3. Locate Hiring Pipeline inside role
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_id}' in parents"
         pipeline = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
-        if pipeline.get("files"):
-            pipeline_id = pipeline["files"][0]["id"]
-        else:
+        if not pipeline.get("files"):
             raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
+        pipeline_id = pipeline["files"][0]["id"]
 
         # 4. Locate stage inside pipeline
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
         stage_result = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
-        if stage_result.get("files"):
-            stage_id = stage_result["files"][0]["id"]
-        else:
+        if not stage_result.get("files"):
             raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
+        stage_id = stage_result["files"][0]["id"]
 
-        # 5. Upload file into stage
-        file_metadata = {"name": f"{cand_name} - CV", "parents": [stage_id]}
-        media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
-        file_obj = drive.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id,parents",
-            supportsAllDrives=True
-        ).execute()
+        # 5. Attach CV (two modes: reference ID vs base64 content)
+        if file_id_or_content.startswith("drive:"):
+            # Just reference an existing Google Drive file
+            uploaded_file_id = file_id_or_content.replace("drive:", "")
+        else:
+            # Assume raw base64 or text content -> create a file
+            import io, base64
+            decoded = base64.b64decode(file_id_or_content)
+            file_metadata = {"name": f"{cand_name} - CV.pdf", "parents": [stage_id]}
+            media = MediaIoBaseUpload(io.BytesIO(decoded), mimetype="application/pdf")
+            file_obj = drive.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id,parents",
+                supportsAllDrives=True
+            ).execute()
+            uploaded_file_id = file_obj["id"]
 
         processed.append({
             "candidateName": cand_name,
             "department": dept,
             "role": role,
             "stage": stage,
-            "uploadedFileId": file_obj["id"],
+            "uploadedFileId": uploaded_file_id,
             "uploadedTo": stage_id
         })
 
