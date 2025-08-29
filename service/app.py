@@ -1099,7 +1099,7 @@ class CandidateUpload(BaseModel):
 
 
 @app.post("/candidates/uploadJson")
-async def upload_candidates_json(request: Request, body: CandidateUploadJSON):
+async def upload_candidates_json(request: Request, body: CandidateUpload):
     """
     Upload candidate CVs into:
     Departments/{Department}/{Role}/Hiring Pipeline/{Stage}
@@ -1119,7 +1119,9 @@ async def upload_candidates_json(request: Request, body: CandidateUploadJSON):
         role = body.roles[i]
         dept = body.departments[i]
         stage = body.hiringStages[i]
-        file_id_or_content = body.files[i]
+
+        # 🔹 Use the helper here
+        file_ref = prepare_candidate_file(body.files[i])
 
         # 1. Locate department
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
@@ -1158,14 +1160,12 @@ async def upload_candidates_json(request: Request, body: CandidateUploadJSON):
             raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
         stage_id = stage_result["files"][0]["id"]
 
-        # 5. Attach CV (two modes: reference ID vs base64 content)
-        if file_id_or_content.startswith("drive:"):
-            # Just reference an existing Google Drive file
-            uploaded_file_id = file_id_or_content.replace("drive:", "")
+        # 5. Attach CV
+        if file_ref.startswith("drive:"):
+            uploaded_file_id = file_ref.replace("drive:", "")
         else:
-            # Assume raw base64 or text content -> create a file
             import io, base64
-            decoded = base64.b64decode(file_id_or_content)
+            decoded = base64.b64decode(file_ref)
             file_metadata = {"name": f"{cand_name} - CV.pdf", "parents": [stage_id]}
             media = MediaIoBaseUpload(io.BytesIO(decoded), mimetype="application/pdf")
             file_obj = drive.files().create(
@@ -1187,7 +1187,6 @@ async def upload_candidates_json(request: Request, body: CandidateUploadJSON):
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
-    
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
