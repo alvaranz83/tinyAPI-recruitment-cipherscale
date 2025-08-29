@@ -1082,119 +1082,89 @@ class UploadCandidatesRequest(BaseModel):
 @app.post("/candidates/uploadManually")
 async def upload_candidates(
     request: Request,
-    candidateNames: Optional[List[str]] = Form(None),
-    roles: Optional[List[str]] = Form(None),
-    hiringStages: Optional[List[str]] = Form(None),
-    files: Optional[List[UploadFile]] = File(None),
-    userEmails: Optional[List[str]] = Form(None)
+    candidateNames: List[str] = Form(...),
+    departments: List[str] = Form(...),
+    roles: List[str] = Form(...),
+    hiringStages: List[str] = Form(...),
+    files: List[UploadFile] = File(...),
+    userEmails: Optional[List[str]] = Form(None),
 ):
     """
-    Upload candidates manually and place CVs into:
-    1. Interviewed Candidates folder (under role)
-    2. Hiring Pipeline stage folder (under role)
+    Upload candidate CVs into:
+    Departments/{Department}/{Role}/Hiring Pipeline/{Stage}
     """
 
     subject = "hr@cipherscale.com"
     _, drive, _ = get_clients(subject)
 
-    # --- JSON mode ---
-    if request.headers.get("content-type", "").startswith("application/json"):
-        body = await request.json()
-        candidates = [CandidateObject(**c) for c in body["candidates"]]
-
-        candidateNames = [c.candidateName for c in candidates]
-        roles = [c.role for c in candidates]
-        hiringStages = [c.hiringStage for c in candidates]
-        files = [c.fileId for c in candidates]
-        userEmails = [c.userEmail or subject for c in candidates]
-
-    # --- Form-data mode ---
-    else:
-        if not (candidateNames and roles and hiringStages and files):
-            raise HTTPException(400, "Missing required form-data fields")
-        if not (len(candidateNames) == len(roles) == len(hiringStages) == len(files)):
-            raise HTTPException(400, "Mismatched number of candidates and files")
-        userEmails = userEmails or [subject] * len(candidateNames)
+    if not (len(candidateNames) == len(roles) == len(departments) == len(hiringStages) == len(files)):
+        raise HTTPException(400, "Mismatched number of fields")
 
     processed = []
 
-    # --- For each candidate ---
     for i in range(len(candidateNames)):
         cand_name = candidateNames[i]
         role = roles[i]
+        dept = departments[i]
         stage = hiringStages[i]
+        upload = files[i]
 
-        # 1. Locate the role folder under Software Engineering
+        # 1. Locate department
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
         query = (
             f"mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false and name='{role}' "
+            f"and trashed=false and name='{dept}' "
             f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
+        )
+        dept_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        if not dept_results.get("files"):
+            raise HTTPException(404, f"Department '{dept}' not found")
+        dept_id = dept_results["files"][0]["id"]
+
+        # 2. Locate role inside department
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{role}' "
+            f"and '{dept_id}' in parents"
         )
         role_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not role_results.get("files"):
-            raise HTTPException(404, f"Role folder '{role}' not found under Departments")
-        role_folder_id = role_results["files"][0]["id"]
+            raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
+        role_id = role_results["files"][0]["id"]
 
-        # 2. Ensure Interviewed Candidates subfolder exists
-        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Interviewed Candidates' and '{role_folder_id}' in parents"
-        interviewed = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
-        if interviewed.get("files"):
-            interviewed_id = interviewed["files"][0]["id"]
-        else:
-            interviewed_id = create_folder(drive, "Interviewed Candidates", role_folder_id)
-
-        # 3. Ensure Hiring Pipeline/<Stage> exists
-        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_folder_id}' in parents"
+        # 3. Locate Hiring Pipeline inside role
+        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_id}' in parents"
         pipeline = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if pipeline.get("files"):
             pipeline_id = pipeline["files"][0]["id"]
         else:
-            pipeline_id = create_folder(drive, "Hiring Pipeline", role_folder_id)
+            raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
 
-        # Stage subfolder
+        # 4. Locate stage inside pipeline
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
         stage_result = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if stage_result.get("files"):
             stage_id = stage_result["files"][0]["id"]
         else:
-            stage_id = create_folder(drive, stage, pipeline_id)
+            raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
 
-        # 4. Upload file if form-data, otherwise reuse fileId
-        if isinstance(files[i], UploadFile):
-            upload = files[i]
-            file_metadata = {"name": f"{cand_name} - CV", "parents": [interviewed_id]}
-            media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
-            file = drive.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields="id,parents",
-                supportsAllDrives=True
-            ).execute()
-            file_id = file["id"]
-        else:
-            # JSON mode: just copy existing fileId into Interviewed Candidates
-            file_id = files[i]
-            drive.files().update(
-                fileId=file_id,
-                addParents=interviewed_id,
-                supportsAllDrives=True,
-                fields="id,parents"
-            ).execute()
-
-        # Also link into pipeline stage folder
-        drive.files().update(
-            fileId=file_id,
-            addParents=stage_id,
-            supportsAllDrives=True,
-            fields="id,parents"
+        # 5. Upload file into stage
+        file_metadata = {"name": f"{cand_name} - CV", "parents": [stage_id]}
+        media = MediaIoBaseUpload(upload.file, mimetype=upload.content_type)
+        file_obj = drive.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id,parents",
+            supportsAllDrives=True
         ).execute()
 
         processed.append({
             "candidateName": cand_name,
+            "department": dept,
             "role": role,
             "stage": stage,
-            "foldersUpdated": [interviewed_id, stage_id]
+            "uploadedFileId": file_obj["id"],
+            "uploadedTo": stage_id
         })
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
