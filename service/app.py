@@ -1,17 +1,13 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime, timezone
 from typing import Optional, List
-import os, json
+import os, json, textwrap, re, uuid, base64, logging
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
-import textwrap
-import re
-import uuid
-import base64
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
