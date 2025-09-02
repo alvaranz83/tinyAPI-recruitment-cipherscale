@@ -9,6 +9,10 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
 
+# Configure logging once (top of file)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
@@ -1101,11 +1105,28 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
     Departments/{Department}/{Role}/Hiring Pipeline/{Stage}
     Using JSON payload (instead of multipart/form-data).
     """
+
+    # 🔹 Log raw request
+    raw_body = await request.body()
+    logger.info(f"📥 Raw request body: {raw_body.decode('utf-8', errors='ignore')}")
+
+    # 🔹 Log parsed fields
+    logger.info(
+        "✅ Parsed CandidateUpload: candidateNames=%s, departments=%s, roles=%s, hiringStages=%s, files_count=%d",
+        body.candidateNames,
+        body.departments,
+        body.roles,
+        body.hiringStages,
+        len(body.files) if body.files else 0
+    )
+
     subject = "hr@cipherscale.com"
     _, drive, _ = get_clients(subject)
 
     # validate lengths
     if not (len(body.candidateNames) == len(body.roles) == len(body.departments) == len(body.hiringStages) == len(body.files)):
+        logger.error("❌ Mismatched number of fields: names=%d roles=%d depts=%d stages=%d files=%d",
+                     len(body.candidateNames), len(body.roles), len(body.departments), len(body.hiringStages), len(body.files))
         raise HTTPException(400, "Mismatched number of fields")
 
     processed = []
@@ -1115,6 +1136,8 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         role = body.roles[i]
         dept = body.departments[i]
         stage = body.hiringStages[i]
+
+        logger.info("➡️ Candidate %d: name=%s, dept=%s, role=%s, stage=%s", i+1, cand_name, dept, role, stage)
 
         # 🔹 Use the helper here
         file_ref = prepare_candidate_file(body.files[i])
@@ -1126,8 +1149,10 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             f"and trashed=false and name='{dept}' "
             f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
         )
+        logger.debug(f"🔎 Dept query: {query}")
         dept_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not dept_results.get("files"):
+            logger.error("❌ Department not found: %s", dept)
             raise HTTPException(404, f"Department '{dept}' not found")
         dept_id = dept_results["files"][0]["id"]
 
@@ -1137,30 +1162,36 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             f"and trashed=false and name='{role}' "
             f"and '{dept_id}' in parents"
         )
+        logger.debug(f"🔎 Role query: {query}")
         role_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not role_results.get("files"):
+            logger.error("❌ Role not found: %s in %s", role, dept)
             raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
         role_id = role_results.get("files")[0]["id"]
 
         # 3. Locate Hiring Pipeline inside role
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_id}' in parents"
+        logger.debug(f"🔎 Pipeline query: {query}")
         pipeline = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not pipeline.get("files"):
+            logger.error("❌ Hiring Pipeline not found for role=%s dept=%s", role, dept)
             raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
         pipeline_id = pipeline["files"][0]["id"]
 
         # 4. Locate stage inside pipeline
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
+        logger.debug(f"🔎 Stage query: {query}")
         stage_result = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
         if not stage_result.get("files"):
+            logger.error("❌ Stage not found: %s under role=%s dept=%s", stage, role, dept)
             raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
         stage_id = stage_result["files"][0]["id"]
 
         # 5. Attach CV
         if file_ref.startswith("drive:"):
             uploaded_file_id = file_ref.replace("drive:", "")
+            logger.info("📂 Using existing Drive file for %s: %s", cand_name, uploaded_file_id)
         else:
-            import io, base64
             decoded = base64.b64decode(file_ref)
             file_metadata = {"name": f"{cand_name} - CV.pdf", "parents": [stage_id]}
             media = MediaIoBaseUpload(io.BytesIO(decoded), mimetype="application/pdf")
@@ -1171,6 +1202,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
                 supportsAllDrives=True
             ).execute()
             uploaded_file_id = file_obj["id"]
+            logger.info("📤 Uploaded CV for %s -> %s", cand_name, uploaded_file_id)
 
         processed.append({
             "candidateName": cand_name,
@@ -1181,6 +1213,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             "uploadedTo": stage_id
         })
 
+    logger.info("✅ Finished upload. Processed candidates: %s", processed)
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
 
