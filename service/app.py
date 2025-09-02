@@ -33,7 +33,7 @@ app = FastAPI(title="Recruiting Sheet Insights")
 
 def prepare_candidate_file(file_ref: str) -> str:
     """
-    Prepares candidate file for /candidates/uploadJson.
+    Prepares candidate file for /candidates/uploadManually.
 
     - If `file_ref` starts with "drive:", assumes it's already a Google Drive file ID.
     - If `file_ref` is a local path, reads it and returns a base64-encoded string.
@@ -1098,7 +1098,7 @@ class CandidateUpload(BaseModel):
     userEmails: Optional[List[str]] = None
 
 
-@app.post("/candidates/uploadJson")
+@app.post("/candidates/uploadManually")
 async def upload_candidates_json(request: Request, body: CandidateUpload):
     """
     Upload candidate CVs into:
