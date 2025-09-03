@@ -1120,7 +1120,11 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         len(body.files) if body.files else 0
     )
 
-    subject = "hr@cipherscale.com"
+    subject = None
+        if body.userEmails and len(body.userEmails) > 0:
+    subject = body.userEmails[0]
+        else:
+    subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
     # validate lengths
