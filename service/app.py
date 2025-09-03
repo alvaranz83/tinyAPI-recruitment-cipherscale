@@ -1121,6 +1121,10 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         subject = body.userEmails[0]  # use first provided user
     else:
         subject = _extract_subject_from_request(request)  # fallback to header/query/env
+    
+        # 👇 Add this line here
+        logger.info(f"👤 Acting as subject: {subject or 'Service Account (no impersonation)'}")
+        
     _, drive, _ = get_clients(subject)
 
     # validate lengths
