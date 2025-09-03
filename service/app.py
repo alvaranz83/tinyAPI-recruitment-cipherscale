@@ -1154,11 +1154,23 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
         )
         logger.debug(f"🔎 Dept query: {query}")
-        dept_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
-        if not dept_results.get("files"):
-            logger.error("❌ Department not found: %s", dept)
-            raise HTTPException(404, f"Department '{dept}' not found")
-        dept_id = dept_results["files"][0]["id"]
+        
+        dept_results = drive.files().list(
+            q=query,
+            fields="files(id, name, parents)",
+            supportsAllDrives=True
+        ).execute()
+
+# 🔎 Log all returned folders with parent IDs
+for f in dept_results.get("files", []):
+    logger.info(f"📂 Found folder: name='{f['name']}', id={f['id']}, parents={f.get('parents')}")
+
+if not dept_results.get("files"):
+    logger.error("❌ Department not found: %s", dept)
+    raise HTTPException(404, f"Department '{dept}' not found")
+
+dept_id = dept_results["files"][0]["id"]
+
 
         # 2. Locate role inside department
         query = (
