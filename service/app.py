@@ -13,7 +13,7 @@ from collections import Counter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-BASE64_PATTERN = re.compile(r'^[A-Za-z0-9+/=]+\Z')
+BASE64_PATTERN = re.compile(r'^[A-Za-z0-9+/=\r\n]+$')  # allow newlines too
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -34,26 +34,23 @@ app = FastAPI(title="Recruiting Sheet Insights")
 # Below are helper functions
 
 def prepare_candidate_file(file_ref: str) -> str:
-    """
-    Prepares candidate file for /candidates/uploadManually.
-
-    - If `file_ref` starts with "drive:", assumes it's already a Google Drive file ID.
-    - If `file_ref` looks like base64, just return it (don’t treat as path).
-    - If `file_ref` is a local path, read and return a base64 string.
-    """
     if file_ref.startswith("drive:"):
-        return file_ref  # Already a Google Drive reference
+        return file_ref
 
-    # Detect if it’s already base64 (long string with only base64 chars)
-    if len(file_ref) > 100 and BASE64_PATTERN.match(file_ref):
-        return file_ref  # ✅ Already base64, no need to read from disk
+    # Detect if it looks like base64 (long enough and only base64 chars)
+    try:
+        # Attempt decode → if works, it's base64
+        base64.b64decode(file_ref, validate=True)
+        return file_ref
+    except Exception:
+        pass
 
     if not os.path.exists(file_ref):
         raise FileNotFoundError(f"File not found: {file_ref}")
 
     with open(file_ref, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("utf-8")
-    return encoded
+        return base64.b64encode(f.read()).decode("utf-8")
+        
 
 def _extract_subject_from_request(req: Request) -> Optional[str]:
     """
