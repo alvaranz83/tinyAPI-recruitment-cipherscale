@@ -8,12 +8,14 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel
 from collections import Counter
+from starlette.datastructures import UploadFile as StarletteUploadFile  # type hinting only
+
+# Size/time limits
+MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))  # 25 MB
 
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-BASE64_PATTERN = re.compile(r'^[A-Za-z0-9+/=\r\n]+$')  # allow newlines too
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -33,23 +35,25 @@ app = FastAPI(title="Recruiting Sheet Insights")
 
 # Below are helper functions
 
-def prepare_candidate_file(file_ref: str) -> str:
-    if file_ref.startswith("drive:"):
-        return file_ref
+PDF_MAGIC = b"%PDF-"
 
-    # Detect if it looks like base64 (long enough and only base64 chars)
-    try:
-        # Attempt decode → if works, it's base64
-        base64.b64decode(file_ref, validate=True)
-        return file_ref
-    except Exception:
-        pass
+def _is_valid_pdf(raw: bytes) -> bool:
+    # Heuristic: require magic, EOF marker, minimum size
+    if len(raw) < 50_000:
+        return False
+    if not raw.startswith(PDF_MAGIC):
+        return False
+    if not raw.rstrip().endswith(b"%%EOF"):
+        return False
+    return True
 
-    if not os.path.exists(file_ref):
-        raise FileNotFoundError(f"File not found: {file_ref}")
+def _safe_pdf_name(candidate_name: str, original_name: str) -> str:
+    # Prefer original if looks OK, else "Name - CV.pdf"
+    name = original_name or f"{candidate_name} - CV.pdf"
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return re.sub(r"[\\/:*?\"<>|]+", "_", name)
 
-    with open(file_ref, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
         
 
 def _extract_subject_from_request(req: Request) -> Optional[str]:
@@ -1086,140 +1090,142 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
     }
 
 
-class CandidateUpload(BaseModel):
-    candidateNames: List[str]
-    departments: List[str]
-    roles: List[str]
-    hiringStages: List[str]
-    files: List[str]  # maybe Drive file IDs or base64 if you want
-    userEmails: Optional[List[str]] = None
 
-
-@app.post("/candidates/uploadManually")
-async def upload_candidates_json(request: Request, body: CandidateUpload):
+@app.post("/candidates/uploadMultipart")
+async def upload_candidates_multipart(
+    request: Request,
+    candidateNames: List[str] = Form(...),
+    departments: List[str] = Form(...),
+    roles: List[str] = Form(...),
+    hiringStages: List[str] = Form(...),
+    files: List[UploadFile] = File(...),
+    userEmails: Optional[List[str]] = Form(None),
+):
     """
-    Upload candidate CVs into:
-    Departments/{Department}/{Role}/Hiring Pipeline/{Stage}
-    Using JSON payload (instead of multipart/form-data).
+    Direct file upload via multipart/form-data.
+    Fields are arrays with matching indexes, e.g.:
+      candidateNames=Jane&candidateNames=John
+      departments=Software Engineering&departments=Software Engineering
+      roles=Senior DevOps Engineer&roles=Senior DevOps Engineer
+      hiringStages=TA/Recruiter Interview&hiringStages=TA/Recruiter Interview
+      files=<file1>&files=<file2>
     """
 
-    # 🔹 Log raw request
-    raw_body = await request.body()
-    logger.info(f"📥 Raw request body: {raw_body.decode('utf-8', errors='ignore')}")
+    require_api_key(request)
 
-    # 🔹 Log parsed fields
-    logger.info(
-        "✅ Parsed CandidateUpload: candidateNames=%s, departments=%s, roles=%s, hiringStages=%s, files_count=%d",
-        body.candidateNames,
-        body.departments,
-        body.roles,
-        body.hiringStages,
-        len(body.files) if body.files else 0
-    )
-
-    if body.userEmails and len(body.userEmails) > 0:
-        subject = body.userEmails[0]  # use first provided user
+    # Impersonation
+    if userEmails and len(userEmails) > 0:
+        subject = userEmails[0]
     else:
-        subject = _extract_subject_from_request(request)  # fallback to header/query/env
-    
-        # 👇 Add this line here
-        logger.info(f"👤 Acting as subject: {subject or 'Service Account (no impersonation)'}")
-        
+        subject = _extract_subject_from_request(request)
+    logger.info(f"👤 Acting as subject: {subject or 'Service Account (no impersonation)'}")
+
     _, drive, _ = get_clients(subject)
 
-    # validate lengths
-    if not (len(body.candidateNames) == len(body.roles) == len(body.departments) == len(body.hiringStages) == len(body.files)):
-        logger.error("❌ Mismatched number of fields: names=%d roles=%d depts=%d stages=%d files=%d",
-                     len(body.candidateNames), len(body.roles), len(body.departments), len(body.hiringStages), len(body.files))
+    # Validate lengths
+    n = len(candidateNames)
+    if not (len(departments) == len(roles) == len(hiringStages) == len(files) == n):
+        logger.error("❌ Mismatched counts: names=%d, depts=%d, roles=%d, stages=%d, files=%d",
+                     len(candidateNames), len(departments), len(roles), len(hiringStages), len(files))
         raise HTTPException(400, "Mismatched number of fields")
 
     processed = []
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    for i in range(len(body.candidateNames)):
-        cand_name = body.candidateNames[i]
-        role = body.roles[i]
-        dept = body.departments[i]
-        stage = body.hiringStages[i]
+    for i in range(n):
+        cand_name = candidateNames[i].strip()
+        dept = departments[i].strip()
+        role = roles[i].strip()
+        stage = hiringStages[i].strip()
+        file: StarletteUploadFile = files[i]
 
-        logger.info("➡️ Candidate %d: name=%s, dept=%s, role=%s, stage=%s", i+1, cand_name, dept, role, stage)
+        logger.info("➡️ Candidate %d: name=%s, dept=%s, role=%s, stage=%s, filename=%s, ctype=%s",
+                    i+1, cand_name, dept, role, stage, file.filename, file.content_type)
 
-        # 🔹 Use the helper here
-        file_ref = prepare_candidate_file(body.files[i])
-
-        # 1. Locate department
-        DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+        # ---- Find department
         query = (
             f"mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{dept}' "
             f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
         )
-        logger.debug(f"🔎 Dept query: {query}")
-        
         dept_results = drive.files().list(
-            q=query,
-            fields="files(id, name, parents)",
-            includeItemsFromAllDrives=True,
-            supportsAllDrives=True
+            q=query, fields="files(id,name,parents)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
         ).execute()
-
-        # 🔎 Log all returned folders with parent IDs
-        for f in dept_results.get("files", []):
-            logger.info(f"📂 Found folder: name='{f['name']}', id={f['id']}, parents={f.get('parents')}")
-        
         if not dept_results.get("files"):
-            logger.error("❌ Department not found: %s", dept)
             raise HTTPException(404, f"Department '{dept}' not found")
-        
         dept_id = dept_results["files"][0]["id"]
 
-
-        # 2. Locate role inside department
+        # ---- Find role under department
         query = (
             f"mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{role}' "
             f"and '{dept_id}' in parents"
         )
-        logger.debug(f"🔎 Role query: {query}")
-        role_results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        role_results = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
         if not role_results.get("files"):
-            logger.error("❌ Role not found: %s in %s", role, dept)
             raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
-        role_id = role_results.get("files")[0]["id"]
+        role_id = role_results["files"][0]["id"]
 
-        # 3. Locate Hiring Pipeline inside role
-        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_id}' in parents"
-        logger.debug(f"🔎 Pipeline query: {query}")
-        pipeline = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        # ---- Find Hiring Pipeline
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
+            f"and name='Hiring Pipeline' and '{role_id}' in parents"
+        )
+        pipeline = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
         if not pipeline.get("files"):
-            logger.error("❌ Hiring Pipeline not found for role=%s dept=%s", role, dept)
             raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
         pipeline_id = pipeline["files"][0]["id"]
 
-        # 4. Locate stage inside pipeline
-        query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
-        logger.debug(f"🔎 Stage query: {query}")
-        stage_result = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        # ---- Find stage under pipeline
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
+            f"and name='{stage}' and '{pipeline_id}' in parents"
+        )
+        stage_result = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
         if not stage_result.get("files"):
-            logger.error("❌ Stage not found: %s under role=%s dept=%s", stage, role, dept)
             raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
         stage_id = stage_result["files"][0]["id"]
 
-        # 5. Attach CV
-        if file_ref.startswith("drive:"):
-            uploaded_file_id = file_ref.replace("drive:", "")
-            logger.info("📂 Using existing Drive file for %s: %s", cand_name, uploaded_file_id)
-        else:
-            decoded = base64.b64decode(file_ref)
-            file_metadata = {"name": f"{cand_name} - CV.pdf", "parents": [stage_id]}
-            media = MediaIoBaseUpload(io.BytesIO(decoded), mimetype="application/pdf")
-            file_obj = drive.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields="id,parents",
-                supportsAllDrives=True
-            ).execute()
-            uploaded_file_id = file_obj["id"]
-            logger.info("📤 Uploaded CV for %s -> %s", cand_name, uploaded_file_id)
+        # ---- Read & validate file (stream with cap)
+        # Note: UploadFile.file is a SpooledTemporaryFile; read in chunks to enforce cap.
+        total = 0
+        buf = io.BytesIO()
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FILE_BYTES:
+                raise HTTPException(413, f"File too large (>{MAX_FILE_BYTES} bytes)")
+            buf.write(chunk)
+        raw = buf.getvalue()
+
+        if not _is_valid_pdf(raw):
+            raise HTTPException(400, f"File '{file.filename or 'unnamed'}' is not a valid/complete PDF")
+
+        # ---- Upload to Drive
+        safe_name = _safe_pdf_name(cand_name, file.filename or "")
+        media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/pdf", resumable=False)
+        file_obj = drive.files().create(
+            body={"name": safe_name, "parents": [stage_id]},
+            media_body=media,
+            fields="id,parents",
+            supportsAllDrives=True
+        ).execute()
+        uploaded_file_id = file_obj["id"]
+        logger.info("📤 Uploaded %s (%d bytes) -> %s", safe_name, len(raw), uploaded_file_id)
 
         processed.append({
             "candidateName": cand_name,
@@ -1230,7 +1236,6 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             "uploadedTo": stage_id
         })
 
-    logger.info("✅ Finished upload. Processed candidates: %s", processed)
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
 
