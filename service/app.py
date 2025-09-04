@@ -1090,6 +1090,19 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
     }
 
 
+class CandidateFile(BaseModel):
+    filename: str
+    content: str  # base64-encoded PDF
+
+
+class UploadJsonRequest(BaseModel):
+    candidateNames: List[str]
+    departments: List[str]
+    roles: List[str]
+    hiringStages: List[str]
+    files: List[CandidateFile]
+    userEmail: Optional[str] = None  # for impersonation
+
 
 @app.post("/candidates/uploadJson")
 def upload_candidates_json(request: Request, body: UploadJsonRequest):
