@@ -1158,6 +1158,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         dept_results = drive.files().list(
             q=query,
             fields="files(id, name, parents)",
+            includeItemsFromAllDrives=True,
             supportsAllDrives=True
         ).execute()
 
@@ -1179,7 +1180,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
             f"and '{dept_id}' in parents"
         )
         logger.debug(f"🔎 Role query: {query}")
-        role_results = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        role_results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
         if not role_results.get("files"):
             logger.error("❌ Role not found: %s in %s", role, dept)
             raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
@@ -1188,7 +1189,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         # 3. Locate Hiring Pipeline inside role
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='Hiring Pipeline' and '{role_id}' in parents"
         logger.debug(f"🔎 Pipeline query: {query}")
-        pipeline = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        pipeline = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
         if not pipeline.get("files"):
             logger.error("❌ Hiring Pipeline not found for role=%s dept=%s", role, dept)
             raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
@@ -1197,7 +1198,7 @@ async def upload_candidates_json(request: Request, body: CandidateUpload):
         # 4. Locate stage inside pipeline
         query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and name='{stage}' and '{pipeline_id}' in parents"
         logger.debug(f"🔎 Stage query: {query}")
-        stage_result = drive.files().list(q=query, fields="files(id,name)", supportsAllDrives=True).execute()
+        stage_result = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
         if not stage_result.get("files"):
             logger.error("❌ Stage not found: %s under role=%s dept=%s", stage, role, dept)
             raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
