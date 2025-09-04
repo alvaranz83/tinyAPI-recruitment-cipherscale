@@ -1239,6 +1239,132 @@ async def upload_candidates_multipart(
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
 
+class CandidateFile(BaseModel):
+    filename: str
+    content: str  # base64-encoded PDF
+
+class UploadJsonRequest(BaseModel):
+    candidateNames: List[str]
+    departments: List[str]
+    roles: List[str]
+    hiringStages: List[str]
+    files: List[CandidateFile]
+    userEmail: str | None = None
+
+@app.post("/candidates/uploadJson")
+def upload_candidates_json(request: Request, body: UploadJsonRequest):
+    """
+    JSON wrapper for candidate upload (Base64 instead of multipart).
+    """
+
+    require_api_key(request)
+
+    # Impersonation
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    n = len(body.candidateNames)
+    if not (len(body.departments) == len(body.roles) == len(body.hiringStages) == len(body.files) == n):
+        raise HTTPException(400, "Mismatched number of fields")
+
+    processed = []
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    for i in range(n):
+        cand_name = body.candidateNames[i].strip()
+        dept = body.departments[i].strip()
+        role = body.roles[i].strip()
+        stage = body.hiringStages[i].strip()
+        file = body.files[i]
+
+        # ---- Find department
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{dept}' "
+            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
+        )
+        dept_results = drive.files().list(
+            q=query, fields="files(id,name,parents)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        if not dept_results.get("files"):
+            raise HTTPException(404, f"Department '{dept}' not found")
+        dept_id = dept_results["files"][0]["id"]
+
+        # ---- Find role under department
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false and name='{role}' "
+            f"and '{dept_id}' in parents"
+        )
+        role_results = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        if not role_results.get("files"):
+            raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
+        role_id = role_results["files"][0]["id"]
+
+        # ---- Find Hiring Pipeline
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
+            f"and name='Hiring Pipeline' and '{role_id}' in parents"
+        )
+        pipeline = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        if not pipeline.get("files"):
+            raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
+        pipeline_id = pipeline["files"][0]["id"]
+
+        # ---- Find stage under pipeline
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
+            f"and name='{stage}' and '{pipeline_id}' in parents"
+        )
+        stage_result = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        if not stage_result.get("files"):
+            raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
+        stage_id = stage_result["files"][0]["id"]
+
+        # ---- Decode Base64 file
+        try:
+            raw = base64.b64decode(file.content)
+        except Exception:
+            raise HTTPException(400, f"File '{file.filename}' is not valid base64")
+
+        if not _is_valid_pdf(raw):
+            raise HTTPException(400, f"File '{file.filename}' is not a valid/complete PDF")
+
+        # ---- Upload to Drive
+        safe_name = _safe_pdf_name(cand_name, file.filename)
+        media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/pdf", resumable=False)
+        file_obj = drive.files().create(
+            body={"name": safe_name, "parents": [stage_id]},
+            media_body=media,
+            fields="id,parents",
+            supportsAllDrives=True
+        ).execute()
+        uploaded_file_id = file_obj["id"]
+
+        processed.append({
+            "candidateName": cand_name,
+            "department": dept,
+            "role": role,
+            "stage": stage,
+            "uploadedFileId": uploaded_file_id,
+            "uploadedTo": stage_id
+        })
+
+    return {"message": "Candidates uploaded successfully", "processed": processed}
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
