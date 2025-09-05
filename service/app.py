@@ -38,21 +38,26 @@ app = FastAPI(title="Recruiting Sheet Insights")
 PDF_MAGIC = b"%PDF-"
 
 def _is_valid_pdf(raw: bytes) -> bool:
-    # Heuristic: require magic, EOF marker, minimum size
-    if len(raw) < 50_000:
+    """
+    Lightweight validation to check if a file is a plausible PDF.
+    Logs reasons when rejected.
+    """
+    # Too small to be a useful PDF (adjust threshold if needed)
+    if len(raw) < 1000:  # ~1 KB
+        logger.warning("PDF rejected: file size too small (%d bytes)", len(raw))
         return False
-    if not raw.startswith(PDF_MAGIC):
-        return False
-    if not raw.rstrip().endswith(b"%%EOF"):
-        return False
-    return True
 
-def _safe_pdf_name(candidate_name: str, original_name: str) -> str:
-    # Prefer original if looks OK, else "Name - CV.pdf"
-    name = original_name or f"{candidate_name} - CV.pdf"
-    if not name.lower().endswith(".pdf"):
-        name += ".pdf"
-    return re.sub(r"[\\/:*?\"<>|]+", "_", name)
+    # Check PDF magic header
+    if not raw.startswith(PDF_MAGIC):
+        logger.warning("PDF rejected: missing %%PDF- header")
+        return False
+
+    # Check EOF marker (must be present, even if whitespace follows)
+    if not raw.rstrip().endswith(b"%%EOF"):
+        logger.warning("PDF rejected: missing %%EOF marker")
+        return False
+
+    return True
 
         
 
