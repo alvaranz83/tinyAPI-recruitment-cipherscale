@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime, timezone
 from typing import Optional, List
-import os, json, textwrap, re, uuid, base64, logging, io
+import os, json, textwrap, re, uuid, base64, logging, io, requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
