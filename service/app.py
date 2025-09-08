@@ -1157,42 +1157,38 @@ def upload_candidates_json(request: Request, body: UploadJsonRequest):
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
 
-class CandidateItem(BaseModel):
-    fileId: str = Field(..., description="Drive file ID for the candidate document")
-    fileName: str = Field(..., description="Actual file name in Drive (with extension)")
-    inferredCandidateName: str = Field(..., description="Name inferred from file name (no extension)")
+class RoleLite(BaseModel):
+    id: str
+    name: str
 
+class DepartmentLite(BaseModel):
+    id: str
+    name: str
+    roles: List[RoleLite] = Field(default_factory=list)
 
-class StageItem(BaseModel):
-    id: str = Field(..., description="Drive folder ID of the stage")
-    name: str = Field(..., description="Stage folder name (e.g., 'Phone Screen')")
-    candidates: List[CandidateItem] = Field(default_factory=list, description="Candidate files directly under this stage (or recursively, if enabled)")
-
-
-class RoleItem(BaseModel):
-    id: str = Field(..., description="Drive folder ID of the role")
-    name: str = Field(..., description="Role folder name")
-    pipelineFolderId: Optional[str] = Field(None, description="Drive folder ID of 'Hiring Pipeline' if present")
-    stages: List[StageItem] = Field(default_factory=list, description="Stage folders and candidate files")
-
-
-class DepartmentItem(BaseModel):
-    id: str = Field(..., description="Drive folder ID of the department")
-    name: str = Field(..., description="Department folder name")
-    roles: List[RoleItem] = Field(default_factory=list, description="Roles inside this department")
-
-
-class CandidatesTreeResponse(BaseModel):
+class DepartmentsAndRolesResponse(BaseModel):
     message: str
-    updatedAt: str
+    updatedAt: str  # ISO 8601 string
     scope: Dict[str, Any]
-    departments: List[DepartmentItem]
+    departments: List[DepartmentLite]
 
-@app.get("/candidates/summary", response_model=CandidatesTreeResponse)
-def candidates_summary_raw(request: Request, recursive: bool = True, userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user")):
+@app.get("/candidates/summary", response_model=DepartmentsAndRolesResponse)
+def candidates_summary_raw(
+    request: Request,
+    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
+):
     """
-    Scans Departments → Roles → Hiring Pipeline → Stages → Candidate files,
-    and returns a raw JSON tree (no computed totals). GPT will compute totals.
+    Returns ONLY Departments and their Roles:
+    {
+      "message": "...",
+      "updatedAt": "<ISO-UTC>",
+      "scope": { "departmentsFolderId": "...", "impersonating": "<email-or-null>" },
+      "departments": [
+        { "id": "<deptId>", "name": "Software Engineering",
+          "roles": [ { "id": "<roleId>", "name": "Senior Backend Engineer" }, ... ] },
+        ...
+      ]
+    }
     """
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
@@ -1202,53 +1198,37 @@ def candidates_summary_raw(request: Request, recursive: bool = True, userEmail: 
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    departments_out: List[DepartmentItem] = []
+    departments_out: List[DepartmentLite] = []
 
-    # 1) Departments (immediate children of Departments root)
+    # Departments directly under the Departments root
     for dept in _iter_child_folders(drive, DEPARTMENTS_FOLDER_ID):
-        dept_item = DepartmentItem(id=dept["id"], name=dept["name"], roles=[])
-        # 2) Roles inside department
-        for role in _iter_child_folders(drive, dept["id"]):
-            # Find "Hiring Pipeline" under role (optional)
-            pipeline = _find_child_folder_by_name(drive, role["id"], "Hiring Pipeline")
-            stages_out: List[StageItem] = []
+        dept_id = dept.get("id")
+        dept_name = dept.get("name") or "(unnamed)"
+        roles_out: List[RoleLite] = []
 
-            if pipeline:
-                # 3) Stages
-                for stage in _iter_child_folders(drive, pipeline["id"]):
-                    # 4) Candidate files
-                    files_iter = (
-                        _iter_files_recursive(drive, stage["id"]) if recursive
-                        else _iter_child_files(drive, stage["id"])
-                    )
-                    candidates = [
-                        CandidateItem(
-                            fileId=f["id"],
-                            fileName=f["name"],
-                            inferredCandidateName=_infer_candidate_name(f["name"])
-                        )
-                        for f in files_iter
-                    ]
-                    stages_out.append(StageItem(id=stage["id"], name=stage["name"], candidates=candidates))
-
-            dept_item.roles.append(RoleItem(
-                id=role["id"],
-                name=role["name"],
-                pipelineFolderId=pipeline["id"] if pipeline else None,
-                stages=stages_out
+        # Roles directly under each department
+        for role in _iter_child_folders(drive, dept_id):
+            roles_out.append(RoleLite(
+                id=role.get("id"),
+                name=role.get("name") or "(unnamed)",
             ))
-        departments_out.append(dept_item)
 
-    return CandidatesTreeResponse(
-        message="Candidates tree collected successfully",
+        departments_out.append(DepartmentLite(
+            id=dept_id,
+            name=dept_name,
+            roles=roles_out,
+        ))
+
+    return DepartmentsAndRolesResponse(
+        message="Departments and roles collected successfully",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
             "impersonating": subject or None,
-            "recursive": recursive,
         },
         departments=departments_out,
     )
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
