@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable
@@ -1189,7 +1189,7 @@ class CandidatesTreeResponse(BaseModel):
     departments: List[DepartmentItem]
 
 @app.get("/candidates/summary", response_model=CandidatesTreeResponse)
-def candidates_summary_raw(request: Request, recursive: bool = True):
+def candidates_summary_raw(request: Request, recursive: bool = True, userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user")):
     """
     Scans Departments → Roles → Hiring Pipeline → Stages → Candidate files,
     and returns a raw JSON tree (no computed totals). GPT will compute totals.
