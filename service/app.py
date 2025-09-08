@@ -1157,38 +1157,34 @@ def upload_candidates_json(request: Request, body: UploadJsonRequest):
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
 
-class RoleLite(BaseModel):
+class StageLite(BaseModel):
     id: str
     name: str
 
-class DepartmentLite(BaseModel):
+class RoleWithStages(BaseModel):
     id: str
     name: str
-    roles: List[RoleLite] = Field(default_factory=list)
+    stages: List[StageLite] = Field(default_factory=list)
 
-class DepartmentsAndRolesResponse(BaseModel):
+class DepartmentWithRolesStages(BaseModel):
+    id: str
+    name: str
+    roles: List[RoleWithStages] = Field(default_factory=list)
+
+class DepartmentsRolesStagesResponse(BaseModel):
     message: str
     updatedAt: str  # ISO 8601 string
     scope: Dict[str, Any]
-    departments: List[DepartmentLite]
+    departments: List[DepartmentWithRolesStages]
+    
 
-@app.get("/candidates/summary", response_model=DepartmentsAndRolesResponse)
+@app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
 def candidates_summary_raw(
     request: Request,
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Returns ONLY Departments and their Roles:
-    {
-      "message": "...",
-      "updatedAt": "<ISO-UTC>",
-      "scope": { "departmentsFolderId": "...", "impersonating": "<email-or-null>" },
-      "departments": [
-        { "id": "<deptId>", "name": "Software Engineering",
-          "roles": [ { "id": "<roleId>", "name": "Senior Backend Engineer" }, ... ] },
-        ...
-      ]
-    }
+    Returns Departments → Roles → Stages (stages come from the 'Hiring Pipeline' folder under each role).
     """
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
@@ -1198,29 +1194,45 @@ def candidates_summary_raw(
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    departments_out: List[DepartmentLite] = []
+    departments_out: List[DepartmentWithRolesStages] = []
 
-    # Departments directly under the Departments root
+    # 1) Departments directly under Departments root
     for dept in _iter_child_folders(drive, DEPARTMENTS_FOLDER_ID):
         dept_id = dept.get("id")
         dept_name = dept.get("name") or "(unnamed)"
-        roles_out: List[RoleLite] = []
+        roles_out: List[RoleWithStages] = []
 
-        # Roles directly under each department
+        # 2) Roles directly under each department
         for role in _iter_child_folders(drive, dept_id):
-            roles_out.append(RoleLite(
-                id=role.get("id"),
-                name=role.get("name") or "(unnamed)",
+            role_id = role.get("id")
+            role_name = role.get("name") or "(unnamed)"
+
+            # 3) Find "Hiring Pipeline" under role (optional)
+            pipeline = _find_child_folder_by_name(drive, role_id, "Hiring Pipeline")
+
+            # 4) Stages = child folders under "Hiring Pipeline"
+            stages_out: List[StageLite] = []
+            if pipeline:
+                for stage in _iter_child_folders(drive, pipeline["id"]):
+                    stages_out.append(StageLite(
+                        id=stage.get("id"),
+                        name=stage.get("name") or "(unnamed)"
+                    ))
+
+            roles_out.append(RoleWithStages(
+                id=role_id,
+                name=role_name,
+                stages=stages_out
             ))
 
-        departments_out.append(DepartmentLite(
+        departments_out.append(DepartmentWithRolesStages(
             id=dept_id,
             name=dept_name,
-            roles=roles_out,
+            roles=roles_out
         ))
 
-    return DepartmentsAndRolesResponse(
-        message="Departments and roles collected successfully",
+    return DepartmentsRolesStagesResponse(
+        message="Departments, roles, and stages collected successfully",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
