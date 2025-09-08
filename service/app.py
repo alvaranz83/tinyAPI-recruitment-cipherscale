@@ -7,7 +7,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
-from collections import Counter
 from starlette.datastructures import UploadFile as StarletteUploadFile  # type hinting only
 
 # Size/time limits
@@ -520,92 +519,6 @@ def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
 
 
 
-@app.get("/stages/summary")
-def stages_summary(
-    request: Request,
-    fileId: str,
-    sheetName: Optional[str] = None,
-    headerRow: int = 1,
-    stageHeader: str = "Candidate Stage Helper",
-):
-    # Reuse your existing API key check & Google clients
-    require_api_key(request)
-    subject = _extract_subject_from_request(request)
-    sheets, drive, _ = get_clients(subject)
-
-    # Make sure it's a Google Sheet we can read
-    meta = drive.files().get(fileId=fileId, fields="mimeType", supportsAllDrives=True).execute()
-    if meta.get("mimeType") != "application/vnd.google-apps.spreadsheet":
-        raise HTTPException(400, "File is not a Google Sheet")
-
-    # Resolve tab name
-    ss = sheets.spreadsheets().get(spreadsheetId=fileId).execute()
-    title = sheetName or ss["sheets"][0]["properties"]["title"]
-
-    # Pull cells (values only is enough here)
-    grid = sheets.spreadsheets().get(
-        spreadsheetId=fileId,
-        ranges=[f"{title}!A:ZZ"],
-        includeGridData=True,
-        fields="sheets(data(rowData(values(userEnteredValue))))"
-    ).execute()
-
-    rows = grid.get("sheets", [{}])[0].get("data", [{}])[0].get("rowData", [])
-    if headerRow < 1 or headerRow > len(rows):
-        raise HTTPException(400, "Header row out of range")
-
-    # Locate the "Candidate Stage" column by header
-    header_cells = rows[headerRow - 1].get("values", [])
-    headers = [norm((c.get("userEnteredValue", {}) or {}).get("stringValue")) for c in header_cells]
-    try:
-        stage_idx = next(i for i, h in enumerate(headers) if h.lower() == stageHeader.lower())
-    except StopIteration:
-        raise HTTPException(400, f"Header '{stageHeader}' not found")
-
-    # Collect stages
-    stages: List[str] = []
-    for r in rows[headerRow:]:
-        cells = r.get("values", [])
-        if stage_idx < len(cells):
-            v = norm((cells[stage_idx].get("userEnteredValue", {}) or {}).get("stringValue"))
-            if v:
-                stages.append(v)
-
-    total = len(stages)
-    if total == 0:
-        return {
-            "total": 0,
-            "distinctStages": 0,
-            "byStage": [],
-            "source": {"fileId": fileId, "sheetName": title, "columnIndex": stage_idx, "updatedAt": datetime.now(timezone.utc).isoformat()}
-        }
-
-    # Case-insensitive grouping with nice labels
-    counts = Counter(s.lower() for s in stages)
-    def label(k: str) -> str:
-        # choose a readable label; title-case is fine for most HR stages
-        return k.title()
-
-    by_stage = [
-        {
-            "stage": label(k),
-            "count": c,
-            "percentage": round(c * 100.0 / total, 1),
-        }
-        for k, c in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
-    ]
-
-    return {
-        "total": total,
-        "distinctStages": len(counts),
-        "byStage": by_stage,
-        "source": {
-            "fileId": fileId,
-            "sheetName": title,
-            "columnIndex": stage_idx,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        },
-    }
 
 
 
