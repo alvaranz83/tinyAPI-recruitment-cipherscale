@@ -203,7 +203,6 @@ def get_clients(subject: Optional[str] = None): # client builder accepts now opt
     """
     info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
     base_creds = Credentials.from_service_account_info(info, scopes=[
-        "https://www.googleapis.com/auth/spreadsheets.readonly",
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/documents",
     ])
@@ -228,10 +227,6 @@ def get_clients(subject: Optional[str] = None): # client builder accepts now opt
 def require_api_key(req: Request):
     if not API_KEY or req.headers.get("x-api-key") != API_KEY:
         raise HTTPException(403, "Forbidden")
-
-
-def norm(s: Optional[str]) -> str:
-    return (s or "").strip()
 
 
 def create_folder(drive, name: str, parent_id: str) -> str:
@@ -465,69 +460,7 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
     return doc_id
 
 
-
-
-
-
 #End of Helper Functions
-
-@app.get("/roles/unique")
-def unique_roles(request: Request, fileId: str, sheetName: Optional[str] = None,
-                 headerRow: int = 1, roleHeader: str = "Role"):
-    require_api_key(request)
-    subject = _extract_subject_from_request(request)
-    sheets, drive, _ = get_clients(subject)
-
-    meta = drive.files().get(fileId=fileId, fields="id,name,mimeType,modifiedTime", supportsAllDrives=True).execute()
-    if meta.get("mimeType") != "application/vnd.google-apps.spreadsheet":
-        raise HTTPException(400, "File is not a Google Sheet")
-
-    ss = sheets.spreadsheets().get(spreadsheetId=fileId).execute()
-    title = sheetName or ss["sheets"][0]["properties"]["title"]
-
-    grid = sheets.spreadsheets().get(
-        spreadsheetId=fileId,
-        ranges=[f"{title}!A:ZZ"],
-        includeGridData=True,
-        fields="sheets(data(rowData(values(userEnteredValue,hyperlink))))"
-    ).execute()
-
-    rows = grid.get("sheets", [{}])[0].get("data", [{}])[0].get("rowData", [])
-    if headerRow < 1 or headerRow > len(rows):
-        raise HTTPException(400, "Header row out of range")
-
-    header_cells = rows[headerRow - 1].get("values", [])
-    headers = [norm((c.get("userEnteredValue", {}) or {}).get("stringValue")) for c in header_cells]
-    try:
-        role_idx = next(i for i,h in enumerate(headers) if h.lower() == roleHeader.lower())
-    except StopIteration:
-        raise HTTPException(400, f"Header '{roleHeader}' not found")
-
-    roles: List[str] = []
-    for r in rows[headerRow:]:
-        cells = r.get("values", [])
-        if role_idx < len(cells):
-            cell = cells[role_idx]
-            text = norm((cell.get("userEnteredValue", {}) or {}).get("stringValue"))
-            link = norm(cell.get("hyperlink"))
-            val = text or link
-            if val:
-                roles.append(val)
-
-    unique = sorted(set(roles))
-    return {
-        "count": len(unique),
-        "roles": unique,
-        "source": {
-            "fileId": fileId,
-            "sheetName": title,
-            "detectedColumnIndex": role_idx,
-            "updatedAt": datetime.now(timezone.utc).isoformat()
-        }
-    }
-
-
-
 
 
 
