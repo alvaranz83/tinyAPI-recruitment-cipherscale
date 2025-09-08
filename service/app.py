@@ -1,12 +1,12 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Iterable
 import os, json, textwrap, re, uuid, base64, logging, io, requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from collections import Counter
 from starlette.datastructures import UploadFile as StarletteUploadFile  # type hinting only
 
@@ -16,6 +16,21 @@ MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))  #
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+## ---------- Candidate name heuristics ----------
+_EXTENSION_RE = re.compile(r"\.(pdf|docx?|txt|rtf)$", re.IGNORECASE)
+
+def _infer_candidate_name(file_name: str) -> str:
+    """
+    Simple, conservative inference: strip extension, trim whitespace.
+    If you upload via your existing /candidates/uploadJson (which uses a safe name),
+    this will typically equal the candidate's display name.
+    """
+    base = _EXTENSION_RE.sub("", file_name).strip()
+    # Optional: collapse common separators
+    base = re.sub(r"\s*[-_]\s*", " - ", base).strip()
+    return base
+## ---------- End of Candidate name heuristics ----------
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -36,6 +51,70 @@ app = FastAPI(title="Recruiting Sheet Insights")
 # Below are helper functions
 
 PDF_MAGIC = b"%PDF-"
+
+#Start of Helpers for Candidate Summary end point
+
+def _drive_list(drive, **kwargs) -> Iterable[dict]:
+    """
+    Wrapper for drive.files().list with pagination.
+    Always sets includeItemsFromAllDrives / supportsAllDrives and a lean fields set.
+    Yields items across all pages.
+    """
+    params = {
+        "includeItemsFromAllDrives": True,
+        "supportsAllDrives": True,
+        "fields": "nextPageToken, files(id,name,mimeType,parents)",
+    }
+    params.update(kwargs)
+    while True:
+        resp = drive.files().list(**params).execute()
+        for f in resp.get("files", []):
+            yield f
+        token = resp.get("nextPageToken")
+        if not token:
+            break
+        params["pageToken"] = token
+
+
+def _iter_child_folders(drive, parent_id: str) -> Iterable[dict]:
+    q = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false "
+        f"and '{parent_id}' in parents"
+    )
+    yield from _drive_list(drive, q=q)
+
+
+def _iter_child_files(drive, parent_id: str) -> Iterable[dict]:
+    q = (
+        "trashed=false "
+        "and mimeType!='application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents"
+    )
+    yield from _drive_list(drive, q=q)
+
+def _find_child_folder_by_name(drive, parent_id: str, name: str) -> dict | None:
+    q = (
+        "mimeType='application/vnd.google-apps.folder' "
+        "and trashed=false "
+        f"and name='{name}' "
+        f"and '{parent_id}' in parents"
+    )
+    for f in _drive_list(drive, q=q):
+        return f
+    return None
+
+
+def _iter_files_recursive(drive, folder_id: str) -> Iterable[dict]:
+    # files directly here
+    for f in _iter_child_files(drive, folder_id):
+        yield f
+    # and recurse into subfolders
+    for sub in _iter_child_folders(drive, folder_id):
+        yield from _iter_files_recursive(drive, sub["id"])
+
+#End of Helpers for Candidates Summary
+
 
 def _is_valid_pdf(raw: bytes) -> bool:
     """
@@ -1221,6 +1300,100 @@ def upload_candidates_json(request: Request, body: UploadJsonRequest):
         })
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
+
+
+class CandidateItem(BaseModel):
+    fileId: str = Field(..., description="Drive file ID for the candidate document")
+    fileName: str = Field(..., description="Actual file name in Drive (with extension)")
+    inferredCandidateName: str = Field(..., description="Name inferred from file name (no extension)")
+
+
+class StageItem(BaseModel):
+    id: str = Field(..., description="Drive folder ID of the stage")
+    name: str = Field(..., description="Stage folder name (e.g., 'Phone Screen')")
+    candidates: List[CandidateItem] = Field(default_factory=list, description="Candidate files directly under this stage (or recursively, if enabled)")
+
+
+class RoleItem(BaseModel):
+    id: str = Field(..., description="Drive folder ID of the role")
+    name: str = Field(..., description="Role folder name")
+    pipelineFolderId: Optional[str] = Field(None, description="Drive folder ID of 'Hiring Pipeline' if present")
+    stages: List[StageItem] = Field(default_factory=list, description="Stage folders and candidate files")
+
+
+class DepartmentItem(BaseModel):
+    id: str = Field(..., description="Drive folder ID of the department")
+    name: str = Field(..., description="Department folder name")
+    roles: List[RoleItem] = Field(default_factory=list, description="Roles inside this department")
+
+
+class CandidatesTreeResponse(BaseModel):
+    message: str
+    updatedAt: str
+    scope: Dict[str, Any]
+    departments: List[DepartmentItem]
+
+@app.get("/candidates/summary", response_model=CandidatesTreeResponse)
+def candidates_summary_raw(request: Request, recursive: bool = True):
+    """
+    Scans Departments → Roles → Hiring Pipeline → Stages → Candidate files,
+    and returns a raw JSON tree (no computed totals). GPT will compute totals.
+    """
+    require_api_key(request)
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    departments_out: List[DepartmentItem] = []
+
+    # 1) Departments (immediate children of Departments root)
+    for dept in _iter_child_folders(drive, DEPARTMENTS_FOLDER_ID):
+        dept_item = DepartmentItem(id=dept["id"], name=dept["name"], roles=[])
+        # 2) Roles inside department
+        for role in _iter_child_folders(drive, dept["id"]):
+            # Find "Hiring Pipeline" under role (optional)
+            pipeline = _find_child_folder_by_name(drive, role["id"], "Hiring Pipeline")
+            stages_out: List[StageItem] = []
+
+            if pipeline:
+                # 3) Stages
+                for stage in _iter_child_folders(drive, pipeline["id"]):
+                    # 4) Candidate files
+                    files_iter = (
+                        _iter_files_recursive(drive, stage["id"]) if recursive
+                        else _iter_child_files(drive, stage["id"])
+                    )
+                    candidates = [
+                        CandidateItem(
+                            fileId=f["id"],
+                            fileName=f["name"],
+                            inferredCandidateName=_infer_candidate_name(f["name"])
+                        )
+                        for f in files_iter
+                    ]
+                    stages_out.append(StageItem(id=stage["id"], name=stage["name"], candidates=candidates))
+
+            dept_item.roles.append(RoleItem(
+                id=role["id"],
+                name=role["name"],
+                pipelineFolderId=pipeline["id"] if pipeline else None,
+                stages=stages_out
+            ))
+        departments_out.append(dept_item)
+
+    return CandidatesTreeResponse(
+        message="Candidates tree collected successfully",
+        updatedAt=datetime.now(timezone.utc).isoformat(),
+        scope={
+            "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
+            "impersonating": subject or None,
+            "recursive": recursive,
+        },
+        departments=departments_out,
+    )
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
