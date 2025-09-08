@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable
 import os, json, textwrap, re, uuid, base64, logging, io, requests
@@ -46,6 +47,14 @@ DEFAULT_IMPERSONATION_SUBJECT = os.environ.get("DEFAULT_IMPERSONATION_SUBJECT") 
 API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
 
 app = FastAPI(title="Recruiting Sheet Insights")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],  # or ["*"]
+    allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
+)
 
 # Below are helper functions
 
