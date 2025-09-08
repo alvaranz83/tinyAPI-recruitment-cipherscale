@@ -1280,7 +1280,7 @@ def candidates_summary_raw(
     """
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
+    _, drive, docs = get_clients(subject)
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
