@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, Iterable
+from typing import Optional, List, Dict, Any, Iterable, Tuple
 import os, json, textwrap, re, uuid, base64, logging, io, requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -17,20 +17,6 @@ MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))  #
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-## ---------- Candidate name heuristics ----------
-_EXTENSION_RE = re.compile(r"\.(pdf|docx?|txt|rtf)$", re.IGNORECASE)
-
-def _infer_candidate_name(file_name: str) -> str:
-    """
-    Simple, conservative inference: strip extension, trim whitespace.
-    If you upload via your existing /candidates/uploadJson (which uses a safe name),
-    this will typically equal the candidate's display name.
-    """
-    base = _EXTENSION_RE.sub("", file_name).strip()
-    # Optional: collapse common separators
-    base = re.sub(r"\s*[-_]\s*", " - ", base).strip()
-    return base
-## ---------- End of Candidate name heuristics ----------
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
@@ -61,6 +47,105 @@ app.add_middleware(
 PDF_MAGIC = b"%PDF-"
 
 #Start of Helpers for Candidate Summary end point
+
+# ======== ADD: new helper to pull plain text from a Google Doc ========
+def _doc_text_from_google_doc(docs, doc_id: str) -> str:
+    """
+    Read a Google Doc and return its plain text by walking the structural elements.
+    """
+    doc = docs.documents().get(documentId=doc_id).execute()
+    elements = doc.get("body", {}).get("content", [])
+    out_lines: list[str] = []
+
+    def read_elements(elems) -> None:
+        for el in elems:
+            # Paragraphs
+            para = el.get("paragraph")
+            if para:
+                text_chunks = []
+                for el2 in para.get("elements", []):
+                    tr = el2.get("textRun")
+                    if tr and "content" in tr:
+                        text_chunks.append(tr["content"])
+                out_lines.append("".join(text_chunks).rstrip("\n"))
+            # Tables
+            table = el.get("table")
+            if table:
+                for row in table.get("tableRows", []):
+                    for cell in row.get("tableCells", []):
+                        read_elements(cell.get("content", []))
+            # Table of contents
+            toc = el.get("tableOfContents")
+            if toc:
+                read_elements(toc.get("content", []))
+
+    read_elements(elements)
+    return "\n".join(out_lines).strip()
+
+
+# ======== ADD: text extraction wrapper for stage files ========
+_DOC_EXT_RE = re.compile(r"\.(docx?|pdf)$", re.IGNORECASE)
+
+def _is_doc_or_pdf(file_name: str, mime_type: str) -> bool:
+    """
+    Decide whether to attempt extraction. Prefer filename (robust to Drive MIME quirks).
+    """
+    if _DOC_EXT_RE.search(file_name or ""):
+        return True
+    # Also cover native Google Docs
+    if mime_type == "application/vnd.google-apps.document":
+        return True
+    return False
+
+def _extract_text_from_file(drive, docs, file_obj: dict) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract text from a Drive file.
+
+    Strategy:
+      * If file is a Google Doc -> read via Docs API.
+      * If file looks like .doc/.docx/.pdf -> copy/convert to Google Doc, read, then delete temp.
+      * Returns (text, error). Only one of them will be non-empty.
+    """
+    fid = file_obj.get("id")
+    fname = file_obj.get("name", "")
+    mime = file_obj.get("mimeType", "")
+
+    # Case 1: Already a Google Doc
+    if mime == "application/vnd.google-apps.document":
+        try:
+            return _doc_text_from_google_doc(docs, fid), None
+        except Exception as e:
+            logger.exception("Failed reading Google Doc %s (%s)", fname, fid)
+            return None, f"Failed reading Google Doc: {e}"
+
+    # Case 2: Try to convert .doc/.docx/.pdf to Google Doc via copy()
+    if _is_doc_or_pdf(fname, mime):
+        temp_id = None
+        try:
+            # Copy with target mimeType = Google Doc (converts supported formats, incl. docx/pdf)
+            temp = drive.files().copy(
+                fileId=fid,
+                body={"mimeType": "application/vnd.google-apps.document"},
+                supportsAllDrives=True,
+                fields="id"
+            ).execute()
+            temp_id = temp.get("id")
+            text = _doc_text_from_google_doc(docs, temp_id)
+            return text, None
+        except Exception as e:
+            logger.exception("Failed converting/extracting %s (%s)", fname, fid)
+            return None, f"Failed converting/extracting: {e}"
+        finally:
+            # Best-effort cleanup
+            if temp_id:
+                try:
+                    drive.files().delete(fileId=temp_id, supportsAllDrives=True).execute()
+                except Exception as del_err:
+                    logger.warning("Could not delete temp converted doc %s: %s", temp_id, del_err)
+
+    # Fallback: unsupported type
+    return None, "Unsupported type for extraction"
+
 
 def _drive_list(drive, **kwargs) -> Iterable[dict]:
     """
@@ -1156,10 +1241,17 @@ def upload_candidates_json(request: Request, body: UploadJsonRequest):
 
     return {"message": "Candidates uploaded successfully", "processed": processed}
 
+class StageFileExtract(BaseModel):
+    id: str
+    name: str
+    mimeType: str
+    text: Optional[str] = None
+    error: Optional[str] = None
 
 class StageLite(BaseModel):
     id: str
     name: str
+    files: List[StageFileExtract] = Field(default_factory=list)
 
 class RoleWithStages(BaseModel):
     id: str
@@ -1214,9 +1306,39 @@ def candidates_summary_raw(
             stages_out: List[StageLite] = []
             if pipeline:
                 for stage in _iter_child_folders(drive, pipeline["id"]):
+                    stage_id = stage.get("id")
+                    stage_name = stage.get("name") or "(unnamed)"
+
+                    # Look for files directly under the stage folder
+                    stage_files: List[StageFileExtract] = []
+                    try:
+                        for f in _iter_child_files(drive, stage_id):
+                            fname = f.get("name", "")
+                            mime  = f.get("mimeType", "")
+                            if _is_doc_or_pdf(fname, mime):
+                                text, err = _extract_text_from_file(drive, docs, f)
+                                stage_files.append(StageFileExtract(
+                                    id=f.get("id"),
+                                    name=fname,
+                                    mimeType=mime,
+                                    text=text,
+                                    error=err
+                                ))
+                    except Exception as e:
+                        logger.exception("Failed listing/extracting files for stage %s (%s)", stage_name, stage_id)
+                        # If listing itself failed, surface as a single 'error' pseudo-entry
+                        stage_files.append(StageFileExtract(
+                            id="",
+                            name="(stage scan error)",
+                            mimeType="",
+                            text=None,
+                            error=f"Failed scanning stage: {e}"
+                        ))
+
                     stages_out.append(StageLite(
-                        id=stage.get("id"),
-                        name=stage.get("name") or "(unnamed)"
+                        id=stage_id,
+                        name=stage_name,
+                        files=stage_files
                     ))
 
             roles_out.append(RoleWithStages(
