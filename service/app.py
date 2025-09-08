@@ -1195,7 +1195,7 @@ def candidates_summary_raw(request: Request, recursive: bool = True, userEmail: 
     and returns a raw JSON tree (no computed totals). GPT will compute totals.
     """
     require_api_key(request)
-    subject = _extract_subject_from_request(request)
+    subject = userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
