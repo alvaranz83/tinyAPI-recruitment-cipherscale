@@ -1276,11 +1276,12 @@ def candidates_summary_raw(
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Returns Departments → Roles → Stages (stages come from the 'Hiring Pipeline' folder under each role).
+    Returns Departments → Roles → Stages (without inline text extraction).
+    Only file metadata is included; text must be fetched separately via /candidates/fileText.
     """
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
-    _, drive, docs = get_clients(subject)
+    _, drive, _ = get_clients(subject)
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
@@ -1288,45 +1289,34 @@ def candidates_summary_raw(
 
     departments_out: List[DepartmentWithRolesStages] = []
 
-    # 1) Departments directly under Departments root
     for dept in _iter_child_folders(drive, DEPARTMENTS_FOLDER_ID):
         dept_id = dept.get("id")
         dept_name = dept.get("name") or "(unnamed)"
         roles_out: List[RoleWithStages] = []
 
-        # 2) Roles directly under each department
         for role in _iter_child_folders(drive, dept_id):
             role_id = role.get("id")
             role_name = role.get("name") or "(unnamed)"
-
-            # 3) Find "Hiring Pipeline" under role (optional)
-            pipeline = _find_child_folder_by_name(drive, role_id, "Hiring Pipeline")
-
-            # 4) Stages = child folders under "Hiring Pipeline"
             stages_out: List[StageLite] = []
+
+            pipeline = _find_child_folder_by_name(drive, role_id, "Hiring Pipeline")
             if pipeline:
                 for stage in _iter_child_folders(drive, pipeline["id"]):
                     stage_id = stage.get("id")
                     stage_name = stage.get("name") or "(unnamed)"
 
-                    # Look for files directly under the stage folder
                     stage_files: List[StageFileExtract] = []
                     try:
                         for f in _iter_child_files(drive, stage_id):
-                            fname = f.get("name", "")
-                            mime  = f.get("mimeType", "")
-                            if _is_doc_or_pdf(fname, mime):
-                                text, err = _extract_text_from_file(drive, docs, f)
-                                stage_files.append(StageFileExtract(
-                                    id=f.get("id"),
-                                    name=fname,
-                                    mimeType=mime,
-                                    text=text,
-                                    error=err
-                                ))
+                            stage_files.append(StageFileExtract(
+                                id=f.get("id"),
+                                name=f.get("name", ""),
+                                mimeType=f.get("mimeType", ""),
+                                text=None,   # ✅ no inline extraction
+                                error=None
+                            ))
                     except Exception as e:
-                        logger.exception("Failed listing/extracting files for stage %s (%s)", stage_name, stage_id)
-                        # If listing itself failed, surface as a single 'error' pseudo-entry
+                        logger.exception("Failed listing files for stage %s (%s)", stage_name, stage_id)
                         stage_files.append(StageFileExtract(
                             id="",
                             name="(stage scan error)",
@@ -1354,13 +1344,46 @@ def candidates_summary_raw(
         ))
 
     return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully",
+        message="Departments, roles, and stages collected successfully (metadata only)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
             "impersonating": subject or None,
         },
         departments=departments_out,
+    )
+
+@app.get("/candidates/fileText", response_model=StageFileExtract)
+def get_file_text(
+    request: Request,
+    fileId: str = Query(..., description="Google Drive file ID"),
+    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
+):
+    """
+    Extract plain text from a specific candidate file (Google Doc, Docx, or PDF).
+    """
+    require_api_key(request)
+    subject = userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    try:
+        f = drive.files().get(fileId=fileId, fields="id,name,mimeType").execute()
+    except Exception as e:
+        raise HTTPException(404, f"File '{fileId}' not found: {e}")
+
+    fname = f.get("name", "")
+    mime = f.get("mimeType", "")
+
+    text, err = (None, None)
+    if _is_doc_or_pdf(fname, mime):
+        text, err = _extract_text_from_file(drive, docs, f)
+
+    return StageFileExtract(
+        id=f["id"],
+        name=fname,
+        mimeType=mime,
+        text=text,
+        error=err
     )
 
 
