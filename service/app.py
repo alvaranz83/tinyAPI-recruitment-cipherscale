@@ -2,13 +2,11 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple
-import os, json, textwrap, re, uuid, base64, logging, io, requests
+import os, json, textwrap, re, uuid, logging
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
-from starlette.datastructures import UploadFile as StarletteUploadFile  # type hinting only
 from difflib import SequenceMatcher
 
 
@@ -187,9 +185,6 @@ def _move_file_between_stages(drive, file_id: str, from_stage_id: str, to_stage_
 
 
 
-# Size/time limits
-MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))  # 25 MB
-
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -219,9 +214,6 @@ app.add_middleware(
     allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
 )
 
-# Below are helper functions
-
-PDF_MAGIC = b"%PDF-"
 
 #Start of Helpers for Candidate Summary end point
 
@@ -385,30 +377,6 @@ def _iter_files_recursive(drive, folder_id: str) -> Iterable[dict]:
 
 #End of Helpers for Candidates Summary
 
-
-def _is_valid_pdf(raw: bytes) -> bool:
-    """
-    Lightweight validation to check if a file is a plausible PDF.
-    Logs reasons when rejected.
-    """
-    # Too small to be a useful PDF (adjust threshold if needed)
-    if len(raw) < 1000:  # ~1 KB
-        logger.warning("PDF rejected: file size too small (%d bytes)", len(raw))
-        return False
-
-    # Check PDF magic header
-    if not raw.startswith(PDF_MAGIC):
-        logger.warning("PDF rejected: missing %%PDF- header")
-        return False
-
-    # Check EOF marker (must be present, even if whitespace follows)
-    if not raw.rstrip().endswith(b"%%EOF"):
-        logger.warning("PDF rejected: missing %%EOF marker")
-        return False
-
-    return True
-
-        
 
 def _extract_subject_from_request(req: Request) -> Optional[str]:
     """
@@ -1291,161 +1259,6 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
     }
 
 
-class CandidateFile(BaseModel):
-    filename: str
-    content: str  # base64-encoded PDF
-
-
-class UploadJsonRequest(BaseModel):
-    candidateNames: List[str]
-    departments: List[str]
-    roles: List[str]
-    hiringStages: List[str]
-    files: List[CandidateFile]
-    userEmail: Optional[str] = None  # for impersonation
-
-
-@app.post("/candidates/uploadJson")
-def upload_candidates_json(request: Request, body: UploadJsonRequest):
-    """
-    JSON wrapper for candidate upload (Base64 instead of multipart).
-    """
-
-    require_api_key(request)
-
-    # Impersonation
-    subject = body.userEmail or _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
-
-    n = len(body.candidateNames)
-    if not (len(body.departments) == len(body.roles) == len(body.hiringStages) == len(body.files) == n):
-        raise HTTPException(400, "Mismatched number of fields")
-
-    processed = []
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
-
-    for i in range(n):
-        cand_name = body.candidateNames[i].strip()
-        dept = body.departments[i].strip()
-        role = body.roles[i].strip()
-        stage = body.hiringStages[i].strip()
-        file = body.files[i]
-
-        # ---- Find department
-        query = (
-            f"mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false and name='{dept}' "
-            f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
-        )
-        dept_results = drive.files().list(
-            q=query, fields="files(id,name,parents)",
-            includeItemsFromAllDrives=True, supportsAllDrives=True
-        ).execute()
-        if not dept_results.get("files"):
-            raise HTTPException(404, f"Department '{dept}' not found")
-        dept_id = dept_results["files"][0]["id"]
-
-        # ---- Find role under department
-        query = (
-            f"mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false and name='{role}' "
-            f"and '{dept_id}' in parents"
-        )
-        role_results = drive.files().list(
-            q=query, fields="files(id,name)",
-            includeItemsFromAllDrives=True, supportsAllDrives=True
-        ).execute()
-        if not role_results.get("files"):
-            raise HTTPException(404, f"Role '{role}' not found in Department '{dept}'")
-        role_id = role_results["files"][0]["id"]
-
-        # ---- Find Hiring Pipeline
-        query = (
-            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
-            f"and name='Hiring Pipeline' and '{role_id}' in parents"
-        )
-        pipeline = drive.files().list(
-            q=query, fields="files(id,name)",
-            includeItemsFromAllDrives=True, supportsAllDrives=True
-        ).execute()
-        if not pipeline.get("files"):
-            raise HTTPException(404, f"Hiring Pipeline not found for role '{role}' in Department '{dept}'")
-        pipeline_id = pipeline["files"][0]["id"]
-
-        # ---- Find stage under pipeline
-        query = (
-            f"mimeType='application/vnd.google-apps.folder' and trashed=false "
-            f"and name='{stage}' and '{pipeline_id}' in parents"
-        )
-        stage_result = drive.files().list(
-            q=query, fields="files(id,name)",
-            includeItemsFromAllDrives=True, supportsAllDrives=True
-        ).execute()
-        if not stage_result.get("files"):
-            raise HTTPException(404, f"Stage '{stage}' not found under Hiring Pipeline for '{role}'")
-        stage_id = stage_result["files"][0]["id"]
-
-        # ---- Decode Base64 file
-        try:
-            raw = base64.b64decode(file.content)
-        except Exception:
-            raise HTTPException(400, f"File '{file.filename}' is not valid base64")
-
-        if not _is_valid_pdf(raw):
-            raise HTTPException(400, f"File '{file.filename}' is not a valid/complete PDF")
-
-        # ---- Upload to Drive
-        safe_name = _safe_pdf_name(cand_name, file.filename)
-        media = MediaIoBaseUpload(io.BytesIO(raw), mimetype="application/pdf", resumable=False)
-        file_obj = drive.files().create(
-            body={"name": safe_name, "parents": [stage_id]},
-            media_body=media,
-            fields="id,parents",
-            supportsAllDrives=True
-        ).execute()
-        uploaded_file_id = file_obj["id"]
-
-        processed.append({
-            "candidateName": cand_name,
-            "department": dept,
-            "role": role,
-            "stage": stage,
-            "uploadedFileId": uploaded_file_id,
-            "uploadedTo": stage_id
-        })
-
-    return {"message": "Candidates uploaded successfully", "processed": processed}
-
-class StageFileExtract(BaseModel):
-    id: str
-    name: str
-    mimeType: str
-    text: Optional[str] = None
-    error: Optional[str] = None
-
-class StageLite(BaseModel):
-    id: str
-    name: str
-    files: List[StageFileExtract] = Field(default_factory=list)
-
-class RoleWithStages(BaseModel):
-    id: str
-    name: str
-    stages: List[StageLite] = Field(default_factory=list)
-
-class DepartmentWithRolesStages(BaseModel):
-    id: str
-    name: str
-    roles: List[RoleWithStages] = Field(default_factory=list)
-
-class DepartmentsRolesStagesResponse(BaseModel):
-    message: str
-    updatedAt: str  # ISO 8601 string
-    scope: Dict[str, Any]
-    departments: List[DepartmentWithRolesStages]
-    
 
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
 def candidates_summary_raw(
