@@ -43,17 +43,21 @@ def _token_set_ratio(a: str, b: str) -> int:
     sm = int(SequenceMatcher(None, _norm(a), _norm(b)).ratio() * 100)
     return int((score * 0.6) + (sm * 0.4))
 
-def _best_match(query: str, candidates: Iterable[Tuple[str, Any]]) -> Tuple[int, Tuple[str, Any] | None]:
+def _best_match(query: str, candidates: Iterable[Tuple[str, Any]]) -> Tuple[int, Any | None, str | None]:
     """
     candidates: iterable of (display_name, payload)
-    Returns (score, (display_name, payload) or (0, None))
+    Returns (score, payload_or_None, matched_display_or_None)
     """
-    best = (0, None)
-    for name, payload in candidates:
-        sc = _token_set_ratio(query, name)
-        if sc > best[0]:
-            best = (sc, (name, payload))
-    return best
+    best_score = 0
+    best_payload = None
+    best_display = None
+    for display, payload in candidates:
+        sc = _token_set_ratio(query, display)
+        if sc > best_score:
+            best_score = sc
+            best_payload = payload
+            best_display = display
+    return best_score, best_payload, best_display
 
 def _parse_move_prompt(prompt: str) -> list[dict]:
     """
@@ -164,10 +168,12 @@ def _list_roles_under_department(drive, dept_folder_id: str) -> list[dict]:
 # Resolution & Move Engine
 # =========================
 
-def _resolve_best_stage(stage_query: str, stages: list[dict]) -> tuple[int, dict | None]:
+def _resolve_best_stage(stage_query: str, stages: list[dict]) -> tuple[int, dict | None, str | None]:
+    # stages elements are dicts with "name", "id"
     return _best_match(stage_query, [(s["name"], s) for s in stages])
 
-def _resolve_best_candidate_file(cand_query: str, file_index: dict) -> tuple[int, dict | None]:
+def _resolve_best_candidate_file(cand_query: str, file_index: dict) -> tuple[int, dict | None, str | None]:
+    # file_index values are dicts with "name", "id", "stageId", "stageName"
     return _best_match(cand_query, [(meta["name"], meta) for meta in file_index.values()])
 
 def _move_file_between_stages(drive, file_id: str, from_stage_id: str, to_stage_id: str) -> dict:
@@ -1601,6 +1607,7 @@ class MoveResponse(BaseModel):
 # =========================
 # POST /candidates/moveByPrompt
 # =========================
+
 @app.post("/candidates/moveByPrompt", response_model=MoveResponse)
 def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
     require_api_key(request)
@@ -1619,13 +1626,16 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
     decisions: List[MoveDecision] = []
 
     for g in groups:
-        # Resolve stage once per group
-        stage_score, stage_match = _resolve_best_stage(g["stageQuery"], stages)
+        # ✅ Unpack to (score, payload_dict, display_name)
+        stage_score, stage_match, stage_display = _resolve_best_stage(g["stageQuery"], stages)
+
         for cand_q in g["candidateQueries"]:
-            cand_score, cand_match = _resolve_best_candidate_file(cand_q, file_index)
+            cand_score, cand_match, cand_display = _resolve_best_candidate_file(cand_q, file_index)
+
+            # ✅ Use the payload dicts (stage_match / cand_match) when indexing by keys
             decision = MoveDecision(
                 candidateQuery=cand_q,
-                candidateMatchedName=cand_match["name"] if cand_match else None,
+                candidateMatchedName=cand_display if cand_match else None,  # human-friendly echo
                 candidateFileId=cand_match["id"] if cand_match else None,
                 candidateScore=cand_score,
                 fromStageId=cand_match["stageId"] if cand_match else None,
@@ -1638,7 +1648,7 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
                 error=None
             )
 
-            # Validation / thresholds
+            # Threshold & validation
             if not cand_match:
                 decision.error = "No candidate file matched"
             elif cand_score < _NAME_SCORE_THRESHOLD:
@@ -1654,13 +1664,13 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
                     try:
                         _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
                         decision.moved = True
-                        # Update local index so subsequent groups see the new stage
+                        # Keep local index in sync so subsequent moves see the new location
                         file_index[cand_match["id"]]["stageId"] = stage_match["id"]
                         file_index[cand_match["id"]]["stageName"] = stage_match["name"]
                     except Exception as e:
                         decision.error = f"Move failed: {e}"
                 else:
-                    decision.moved = False  # dry run
+                    decision.moved = False  # dry-run preview
 
             decisions.append(decision)
 
@@ -1672,9 +1682,11 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
         decisions=decisions
     )
 
+
 # =========================
 # POST /candidates/move (structured)
 # =========================
+
 @app.post("/candidates/move", response_model=MoveResponse)
 def move_candidates_structured(request: Request, body: MoveStructuredRequest):
     require_api_key(request)
@@ -1688,12 +1700,15 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
     decisions: List[MoveDecision] = []
 
     for grp in body.moves:
-        stage_score, stage_match = _resolve_best_stage(grp.stageQuery, stages)
+        # ✅ Unpack to (score, payload_dict, display_name)
+        stage_score, stage_match, stage_display = _resolve_best_stage(grp.stageQuery, stages)
+
         for cand_q in grp.candidateQueries:
-            cand_score, cand_match = _resolve_best_candidate_file(cand_q, file_index)
+            cand_score, cand_match, cand_display = _resolve_best_candidate_file(cand_q, file_index)
+
             decision = MoveDecision(
                 candidateQuery=cand_q,
-                candidateMatchedName=cand_match["name"] if cand_match else None,
+                candidateMatchedName=cand_display if cand_match else None,
                 candidateFileId=cand_match["id"] if cand_match else None,
                 candidateScore=cand_score,
                 fromStageId=cand_match["stageId"] if cand_match else None,
@@ -1737,8 +1752,6 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
         thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
         decisions=decisions
     )
-
-
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
