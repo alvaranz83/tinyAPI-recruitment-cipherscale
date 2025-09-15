@@ -1830,7 +1830,7 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
 
     decisions: List[UploadCVItemDecision] = []
 
-        for item in body.items:
+    for item in body.items:
         logger.info("📝 Processing candidate: %s (stageQuery=%s, roleQuery=%s, positionId=%s)",
                     item.candidateName, item.stageQuery, item.roleQuery, item.positionId)
     
