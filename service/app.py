@@ -1831,16 +1831,23 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
     decisions: List[UploadCVItemDecision] = []
 
     for item in body.items:
-        logger.info("📝 Processing candidate: %s (stageQuery=%s, roleQuery=%s, positionId=%s)",
-                    item.candidateName, item.stageQuery, item.roleQuery, item.positionId)
+    logger.info("📝 Processing candidate: %s (stageQuery=%s, roleQuery=%s, positionId=%s)",
+                item.candidateName, item.stageQuery, item.roleQuery, item.positionId)
 
-        dec = UploadCVItemDecision(
-            candidateName=item.candidateName,
-            positionId=item.positionId,
-            stageQuery=item.stageQuery,
-            roleQuery=item.roleQuery,
-            cvTextPreview=item.content[:200] + "..." if item.content else None,
-        )
+    # ✅ Log the full extracted CV text
+    if item.content:
+        logger.info("📄 Full extracted CV text for %s:\n%s", item.candidateName, item.content)
+    else:
+        logger.warning("⚠️ No extracted CV text provided for %s", item.candidateName)
+
+    dec = UploadCVItemDecision(
+        candidateName=item.candidateName,
+        positionId=item.positionId,
+        stageQuery=item.stageQuery,
+        roleQuery=item.roleQuery,
+        cvTextPreview=item.content[:200] + "..." if item.content else None,
+    )
+
 
         # Ensure we have a role folder ID
         role_id = item.positionId
