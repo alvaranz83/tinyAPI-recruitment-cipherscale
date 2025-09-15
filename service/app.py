@@ -1367,6 +1367,39 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
         "stages": created_stages
     }
 
+# ===== Pydantic models for Candidates summary/fileText =====
+
+class StageFileExtract(BaseModel):
+    id: str = ""
+    name: str = ""
+    mimeType: str = ""
+    text: Optional[str] = None
+    error: Optional[str] = None
+
+class StageLite(BaseModel):
+    id: str
+    name: str
+    files: List[StageFileExtract] = Field(default_factory=list)
+
+class RoleWithStages(BaseModel):
+    id: str
+    name: str
+    stages: List[StageLite] = Field(default_factory=list)
+
+class DepartmentWithRolesStages(BaseModel):
+    id: str
+    name: str
+    roles: List[RoleWithStages] = Field(default_factory=list)
+
+class CandidatesSummaryScope(BaseModel):
+    departmentsFolderId: str
+    impersonating: Optional[str] = None
+
+class DepartmentsRolesStagesResponse(BaseModel):
+    message: str
+    updatedAt: str  # ISO8601 datetime string
+    scope: CandidatesSummaryScope
+    departments: List[DepartmentWithRolesStages] = Field(default_factory=list)
 
 
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
