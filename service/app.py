@@ -2,9 +2,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple
-import os, json, textwrap, re, uuid, logging
+import os, json, textwrap, re, uuid, logging, io
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload 
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
@@ -183,7 +184,115 @@ def _move_file_between_stages(drive, file_id: str, from_stage_id: str, to_stage_
         supportsAllDrives=True
     ).execute()
 
+_ROLE_SCORE_THRESHOLD = int(os.environ.get("ROLE_SCORE_THRESHOLD", "40"))
+_FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
+def _strip_ext(name: str) -> str:
+    return re.sub(r"\.[A-Za-z0-9]+$", "", name or "")
+
+def _resolve_best_role_by_name(drive, departments_root_id: str, role_query: str) -> tuple[int, dict | None, str | None]:
+    """
+    Walk all department folders under DEPARTMENTS_FOLDER_ID, gather role folders,
+    fuzzy match by name. Returns (score, {'id','name','deptId','deptName'}|None, display_name).
+    """
+    candidates = []
+    for dept in _iter_child_folders(drive, departments_root_id):
+        dept_id = dept.get("id")
+        dept_name = dept.get("name", "")
+        for role in _iter_child_folders(drive, dept_id):
+            r = {"id": role["id"], "name": role.get("name", ""), "deptId": dept_id, "deptName": dept_name}
+            candidates.append((f"{role.get('name','')} ({dept_name})", r))
+    return _best_match(role_query, candidates)
+
+def _list_all_roles(drive, departments_root_id: str) -> list[dict]:
+    roles = []
+    for dept in _iter_child_folders(drive, departments_root_id):
+        dept_id = dept.get("id")
+        dept_name = dept.get("name", "")
+        for role in _iter_child_folders(drive, dept_id):
+            roles.append({"id": role["id"], "name": role.get("name",""), "deptId": dept_id, "deptName": dept_name})
+    return roles
+
+def _parse_upload_prompt(prompt: str) -> list[dict]:
+    """
+    Parse strings like:
+      "upload alice and bob to onsite for Senior Backend Engineer,
+       and charlie to offer accepted for Sales AE"
+    ->
+      [
+        { "candidateQueries": ["alice", "bob"], "stageQuery": "onsite", "roleQuery": "Senior Backend Engineer" },
+        { "candidateQueries": ["charlie"], "stageQuery": "offer accepted", "roleQuery": "Sales AE" }
+      ]
+
+    Also tolerates prompt variants like:
+      "upload vadim to technical interview"
+      (roleQuery omitted)
+    """
+    # Reuse move-style parsing to get candidate + "stage for role" blobs
+    groups_basic = _parse_move_prompt(prompt)
+    out = []
+    for g in groups_basic:
+        stage = g.get("stageQuery","")
+        role_query = None
+        # Split "... to STAGE for ROLE"
+        parts = _FOR_SPLIT_RE.split(stage)
+        if len(parts) >= 2:
+            stage_query = parts[0].strip(" ,.")
+            role_query  = parts[1].strip(" ,.")
+        else:
+            stage_query = stage.strip(" ,.")
+        out.append({
+            "candidateQueries": g.get("candidateQueries", []),
+            "stageQuery": stage_query,
+            "roleQuery": role_query
+        })
+    return out
+
+def _assign_files_to_candidates(files: list[UploadFile], candidate_names: list[str]) -> dict[str, UploadFile | None]:
+    """
+    Greedy assignment: match files to candidate names by filename similarity.
+    Returns map: candidate_display_name -> UploadFile (or None if not found).
+    """
+    remaining = list(files)
+    assignments = {}
+    for cand in candidate_names:
+        best = None
+        best_score = -1
+        for uf in remaining:
+            fname = _strip_ext(uf.filename)
+            sc = _token_set_ratio(cand, fname)
+            if sc > best_score:
+                best_score = sc
+                best = uf
+        assignments[cand] = best
+        if best in remaining:
+            remaining.remove(best)
+    return assignments
+
+def _upload_as_google_doc(drive, docs, parent_id: str, doc_name: str, file: UploadFile) -> str:
+    """
+    Convert uploaded file directly to a Google Doc inside parent_id.
+    No base64. Uses multipart media upload.
+    """
+    # Fallback content-type if missing
+    ctype = file.content_type or "application/octet-stream"
+    buf = io.BytesIO(file.file.read())
+    media = MediaIoBaseUpload(buf, mimetype=ctype, resumable=False)
+
+    # Let Drive convert to Google Docs by setting metadata mimeType to Docs
+    meta = {
+        "name": doc_name,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [parent_id],
+    }
+    created = drive.files().create(
+        body=meta,
+        media_body=media,
+        fields="id",
+        supportsAllDrives=True
+    ).execute()
+    return created["id"]
+    
 
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
@@ -1565,6 +1674,197 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
         thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
         decisions=decisions
     )
+
+class UploadCVItemDecision(BaseModel):
+    candidateQuery: str
+    candidateResolvedName: Optional[str] = None
+    candidateScore: int
+    fileName: Optional[str] = None
+    positionQuery: Optional[str] = None
+    positionId: Optional[str] = None
+    positionName: Optional[str] = None
+    positionScore: int
+    stageQuery: Optional[str] = None
+    stageId: Optional[str] = None
+    stageName: Optional[str] = None
+    stageScore: int
+    createdFileId: Optional[str] = None
+    createdDocLink: Optional[str] = None
+    error: Optional[str] = None
+    moved: bool = False  # semantic parity with other endpoints
+
+class UploadCVsResponse(BaseModel):
+    message: str
+    dryRun: bool
+    thresholds: Dict[str, int]
+    needsClarification: bool
+    clarificationReason: Optional[str] = None
+    roleSuggestions: Optional[List[Dict[str, Any]]] = None  # when role missing/ambiguous
+    decisions: List[UploadCVItemDecision]
+
+class UploadCVsRequest(BaseModel):
+    # for JSON fallback; in multipart these arrive as form fields
+    prompt: str
+    positionId: Optional[str] = None  # if provided, applies as default role for groups w/o roleQuery
+    dryRun: bool = False
+    userEmail: Optional[str] = None
+
+@app.post("/candidates/uploadCVs", response_model=UploadCVsResponse)
+async def upload_cvs(
+    request: Request,
+    prompt: str = Form(..., description="Free-text instruction, e.g. 'upload Alice to Onsite for Backend'"),
+    positionId: Optional[str] = Form(None, description="Role folder ID (default for groups lacking 'for ROLE')"),
+    dryRun: bool = Form(False),
+    userEmail: Optional[str] = Form(None),
+    files: List[UploadFile] = File(..., description="One or more candidate CV files"),
+):
+    """
+    Bulk-upload CVs into Hiring Pipeline stages, with fuzzy resolution of candidate names,
+    stages, and roles. Converts each file directly to a Google Doc named
+    '{Candidate Name} - CV' inside the matched stage folder.
+    """
+    require_api_key(request)
+    subject = userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # Parse prompt into groups (candidate(s) -> stage -> (optional) role)
+    groups = _parse_upload_prompt(prompt)
+    if not groups:
+        raise HTTPException(400, "Could not parse any 'candidates → stage [for role]' group from the prompt")
+
+    # Gather decisions
+    decisions: List[UploadCVItemDecision] = []
+    needs_clarification = False
+    clar_reason = None
+    role_suggestions: List[Dict[str, Any]] | None = None
+
+    for g in groups:
+        stage_query = g.get("stageQuery") or ""
+        role_query = g.get("roleQuery")
+
+        # Resolve role: prefer explicit role in group; else fallback to form positionId; else try global fuzzy if only one good match
+        resolved_role_id = None
+        resolved_role_name = None
+        role_score = 0
+
+        if role_query:
+            role_score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_query)
+            if role_match and role_score >= _ROLE_SCORE_THRESHOLD:
+                resolved_role_id = role_match["id"]
+                resolved_role_name = role_match["name"]
+            else:
+                needs_clarification = True
+                clar_reason = "Role not found or low score"
+                # Surface top suggestions for the frontend to ask the user
+                all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
+                # Rank by fuzzy score against role_query
+                ranked = sorted(
+                    [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": _token_set_ratio(role_query, r["name"])} for r in all_roles],
+                    key=lambda x: x["score"],
+                    reverse=True
+                )[:6]
+                role_suggestions = ranked
+        elif positionId:
+            # Blind-trust provided role folder ID
+            try:
+                meta = drive.files().get(fileId=positionId, fields="id,name").execute()
+                resolved_role_id = meta["id"]
+                resolved_role_name = meta.get("name", "")
+                role_score = 100
+            except Exception as e:
+                raise HTTPException(404, f"PositionId '{positionId}' not found: {e}")
+        else:
+            # No role specified anywhere -> require clarification
+            needs_clarification = True
+            clar_reason = "Role not specified"
+            # optional: suggest top roles overall
+            all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
+            role_suggestions = [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": 0} for r in all_roles[:10]]
+
+        # If we have a role, load its stages
+        stages = []
+        file_index = {}
+        if resolved_role_id:
+            stages, file_index = _build_candidate_index(drive, resolved_role_id)
+
+        # Resolve target stage (only when role is resolved)
+        stage_id = None
+        stage_name = None
+        stage_score = 0
+        if resolved_role_id:
+            stage_score, stage_match, stage_display = _resolve_best_stage(stage_query, stages)
+            if stage_match and stage_score >= _STAGE_SCORE_THRESHOLD:
+                stage_id = stage_match["id"]
+                stage_name = stage_match["name"]
+
+        # Now resolve each candidate and assign files
+        cand_display_names: List[str] = []
+        for q in g.get("candidateQueries", []):
+            # We don't have pre-existing candidate files yet; "resolve name" is really just choosing a cleaned display
+            cand_display_names.append(q.strip())
+
+        file_map = _assign_files_to_candidates(files, cand_display_names)
+
+        for cand_q in g.get("candidateQueries", []):
+            # Candidate “resolution” is similarity against the chosen filename; still report a score
+            matched_file = file_map.get(cand_q)
+            cand_score = _token_set_ratio(cand_q, _strip_ext(matched_file.filename) if matched_file else "")
+            cand_name_resolved = _strip_ext(matched_file.filename) if matched_file else cand_q
+
+            dec = UploadCVItemDecision(
+                candidateQuery=cand_q,
+                candidateResolvedName=cand_name_resolved,
+                candidateScore=cand_score,
+                fileName=(matched_file.filename if matched_file else None),
+                positionQuery=role_query,
+                positionId=resolved_role_id,
+                positionName=resolved_role_name,
+                positionScore=role_score,
+                stageQuery=stage_query,
+                stageId=stage_id,
+                stageName=stage_name,
+                stageScore=stage_score,
+            )
+
+            # Validate thresholds & prerequisites
+            if not resolved_role_id:
+                dec.error = "Role unresolved. Please specify the role."
+            elif not stage_id:
+                dec.error = f"Target stage unresolved or low score ({stage_score}<{_STAGE_SCORE_THRESHOLD})."
+            elif not matched_file:
+                dec.error = "No file matched for this candidate."
+            elif cand_score < _NAME_SCORE_THRESHOLD:
+                dec.error = f"Low candidate/file match score ({cand_score}<{_NAME_SCORE_THRESHOLD})."
+            else:
+                # We have role, stage, and a file. Upload/convert to Google Doc.
+                if not dryRun:
+                    try:
+                        doc_name = f"{cand_name_resolved} - CV"
+                        new_id = _upload_as_google_doc(drive, docs, stage_id, doc_name, matched_file)
+                        dec.createdFileId = new_id
+                        dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
+                        dec.moved = True
+                    except Exception as e:
+                        dec.error = f"Upload failed: {e}"
+                else:
+                    dec.moved = False
+
+            decisions.append(dec)
+
+    return UploadCVsResponse(
+        message="Processed uploadCVs",
+        dryRun=dryRun,
+        thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD, "role": _ROLE_SCORE_THRESHOLD},
+        needsClarification=needs_clarification,
+        clarificationReason=clar_reason,
+        roleSuggestions=role_suggestions,
+        decisions=decisions
+    )
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
