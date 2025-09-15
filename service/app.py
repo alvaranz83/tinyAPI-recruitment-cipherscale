@@ -1826,9 +1826,14 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
+    logger.info("🚀 uploadCVs called with %d items (dryRun=%s, user=%s)", len(body.items), body.dryRun, subject)
+
     decisions: List[UploadCVItemDecision] = []
 
     for item in body.items:
+        logger.info("📝 Processing candidate: %s (stageQuery=%s, roleQuery=%s, positionId=%s)",
+                    item.candidateName, item.stageQuery, item.roleQuery, item.positionId)
+
         dec = UploadCVItemDecision(
             candidateName=item.candidateName,
             positionId=item.positionId,
@@ -1843,15 +1848,18 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
         if not role_id:
             if not item.roleQuery:
                 dec.error = "No positionId or roleQuery provided"
+                logger.warning("⚠️ No roleQuery or positionId provided for candidate %s", item.candidateName)
                 decisions.append(dec)
                 continue
 
-            # Fuzzy match role
+            logger.info("🔍 Resolving role by name: %s", item.roleQuery)
             score, match, role_name_display = _resolve_best_role_by_name(
                 drive, DEPARTMENTS_FOLDER_ID, item.roleQuery
             )
+            logger.info("   → Role resolution score=%s, match=%s", score, role_name_display)
             if not match or score < _ROLE_SCORE_THRESHOLD:
                 dec.error = f"Could not resolve role '{item.roleQuery}' (score={score})"
+                logger.error("❌ Failed to resolve role for candidate %s (score=%s)", item.candidateName, score)
                 decisions.append(dec)
                 continue
 
@@ -1859,16 +1867,21 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
             dec.positionId = role_id
             dec.roleQuery = match["name"]
 
-        # Resolve stage inside role’s Hiring Pipeline
+        logger.info("📂 Loading pipeline stages for roleId=%s (%s)", role_id, dec.roleQuery or role_name_display)
         stages = _load_pipeline_stages(drive, role_id)
         if not stages:
             dec.error = f"No Hiring Pipeline found under role {dec.roleQuery or role_name_display}"
+            logger.error("❌ No Hiring Pipeline found for roleId=%s", role_id)
             decisions.append(dec)
             continue
 
+        logger.info("✅ Found %d stages: %s", len(stages), [s['name'] for s in stages])
         stage_score, stage_match, stage_display = _resolve_best_stage(item.stageQuery, stages)
+        logger.info("🔍 Stage resolution: query='%s' → score=%s, match=%s", item.stageQuery, stage_score, stage_display)
+
         if not stage_match or stage_score < _STAGE_SCORE_THRESHOLD:
             dec.error = f"Could not resolve stage '{item.stageQuery}' (score={stage_score})"
+            logger.error("❌ Failed to resolve stage for candidate %s (score=%s)", item.candidateName, stage_score)
             decisions.append(dec)
             continue
 
@@ -1877,28 +1890,35 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
 
         if not item.content.strip():
             dec.error = "No CV text provided"
+            logger.error("❌ No CV text provided for candidate %s", item.candidateName)
             decisions.append(dec)
             continue
 
         if not body.dryRun:
             try:
+                logger.info("📄 Creating Google Doc for candidate %s in stage %s", item.candidateName, dec.stageQuery)
                 doc_name = f"{item.candidateName} - CV"
                 new_id = create_google_doc(docs, drive, target_stage_id, doc_name, item.content)
                 dec.createdFileId = new_id
                 dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
                 dec.moved = True
+                logger.info("✅ Created Google Doc for %s: %s", item.candidateName, dec.createdDocLink)
             except Exception as e:
                 dec.error = f"Failed to create doc: {e}"
+                logger.exception("❌ Exception creating Google Doc for candidate %s", item.candidateName)
         else:
+            logger.info("🔎 Dry-run enabled, not creating Google Doc for %s", item.candidateName)
             dec.moved = False
 
         decisions.append(dec)
 
+    logger.info("🏁 Completed uploadCVs for %d candidates", len(body.items))
     return UploadCVsResponse(
         message="Processed uploadCVs with GPT-extracted CV text",
         dryRun=body.dryRun,
         decisions=decisions
     )
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
