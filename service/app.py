@@ -1816,8 +1816,10 @@ async def upload_cvs(
 ):
     """
     Bulk-upload CVs into Hiring Pipeline stages, with fuzzy resolution of candidate names,
-    stages, and roles. Converts each file directly to a Google Doc named
-    '{Candidate Name} - CV' inside the matched stage folder.
+    stages, and roles. Instead of uploading the raw file, we:
+      * Extract plain text from the CV (PDF/DOCX/DOC).
+      * Create a new Google Doc with that extracted text.
+      * Place it in the right stage folder.
     """
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
@@ -1827,12 +1829,10 @@ async def upload_cvs(
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    # Parse prompt into groups (candidate(s) -> stage -> (optional) role)
     groups = _parse_upload_prompt(prompt)
     if not groups:
         raise HTTPException(400, "Could not parse any 'candidates → stage [for role]' group from the prompt")
 
-    # Gather decisions
     decisions: List[UploadCVItemDecision] = []
     needs_clarification = False
     clar_reason = None
@@ -1842,30 +1842,26 @@ async def upload_cvs(
         stage_query = g.get("stageQuery") or ""
         role_query = g.get("roleQuery")
 
-        # Resolve role: prefer explicit role in group; else fallback to form positionId; else try global fuzzy if only one good match
+        # ---- Resolve role ----
         resolved_role_id = None
         resolved_role_name = None
         role_score = 0
 
         if role_query:
-            role_score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_query)
+            role_score, role_match, _ = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_query)
             if role_match and role_score >= _ROLE_SCORE_THRESHOLD:
                 resolved_role_id = role_match["id"]
                 resolved_role_name = role_match["name"]
             else:
                 needs_clarification = True
                 clar_reason = "Role not found or low score"
-                # Surface top suggestions for the frontend to ask the user
                 all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
-                # Rank by fuzzy score against role_query
-                ranked = sorted(
+                role_suggestions = sorted(
                     [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": _token_set_ratio(role_query, r["name"])} for r in all_roles],
                     key=lambda x: x["score"],
                     reverse=True
                 )[:6]
-                role_suggestions = ranked
         elif positionId:
-            # Blind-trust provided role folder ID
             try:
                 meta = drive.files().get(fileId=positionId, fields="id,name").execute()
                 resolved_role_id = meta["id"]
@@ -1874,39 +1870,25 @@ async def upload_cvs(
             except Exception as e:
                 raise HTTPException(404, f"PositionId '{positionId}' not found: {e}")
         else:
-            # No role specified anywhere -> require clarification
             needs_clarification = True
             clar_reason = "Role not specified"
-            # optional: suggest top roles overall
             all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
             role_suggestions = [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": 0} for r in all_roles[:10]]
 
-        # If we have a role, load its stages
-        stages = []
-        file_index = {}
+        # ---- Resolve stage ----
+        stage_id, stage_name, stage_score = None, None, 0
         if resolved_role_id:
-            stages, file_index = _build_candidate_index(drive, resolved_role_id)
-
-        # Resolve target stage (only when role is resolved)
-        stage_id = None
-        stage_name = None
-        stage_score = 0
-        if resolved_role_id:
-            stage_score, stage_match, stage_display = _resolve_best_stage(stage_query, stages)
+            stages, _ = _build_candidate_index(drive, resolved_role_id)
+            stage_score, stage_match, _ = _resolve_best_stage(stage_query, stages)
             if stage_match and stage_score >= _STAGE_SCORE_THRESHOLD:
                 stage_id = stage_match["id"]
                 stage_name = stage_match["name"]
 
-        # Now resolve each candidate and assign files
-        cand_display_names: List[str] = []
-        for q in g.get("candidateQueries", []):
-            # We don't have pre-existing candidate files yet; "resolve name" is really just choosing a cleaned display
-            cand_display_names.append(q.strip())
-
+        # ---- Assign files to candidates ----
+        cand_display_names = [q.strip() for q in g.get("candidateQueries", [])]
         file_map = _assign_files_to_candidates(files, cand_display_names)
 
         for cand_q in g.get("candidateQueries", []):
-            # Candidate “resolution” is similarity against the chosen filename; still report a score
             matched_file = file_map.get(cand_q)
             cand_score = _token_set_ratio(cand_q, _strip_ext(matched_file.filename) if matched_file else "")
             cand_name_resolved = _strip_ext(matched_file.filename) if matched_file else cand_q
@@ -1926,7 +1908,6 @@ async def upload_cvs(
                 stageScore=stage_score,
             )
 
-            # Validate thresholds & prerequisites
             if not resolved_role_id:
                 dec.error = "Role unresolved. Please specify the role."
             elif not stage_id:
@@ -1936,23 +1917,42 @@ async def upload_cvs(
             elif cand_score < _NAME_SCORE_THRESHOLD:
                 dec.error = f"Low candidate/file match score ({cand_score}<{_NAME_SCORE_THRESHOLD})."
             else:
-                # We have role, stage, and a file. Upload/convert to Google Doc.
                 if not dryRun:
                     try:
+                        # ✅ Extract text from the uploaded CV
+                        file_bytes = await matched_file.read()
+                        temp_id = None
+                        try:
+                            # Upload temporarily to Drive for conversion
+                            buf = io.BytesIO(file_bytes)
+                            media = MediaIoBaseUpload(buf, mimetype=matched_file.content_type, resumable=False)
+                            temp = drive.files().create(
+                                body={"name": matched_file.filename, "mimeType": "application/vnd.google-apps.document"},
+                                media_body=media,
+                                fields="id",
+                                supportsAllDrives=True
+                            ).execute()
+                            temp_id = temp.get("id")
+                            extracted_text = _doc_text_from_google_doc(docs, temp_id)
+                        finally:
+                            if temp_id:
+                                drive.files().delete(fileId=temp_id, supportsAllDrives=True).execute()
+
+                        # ✅ Create final Google Doc with extracted text
                         doc_name = f"{cand_name_resolved} - CV"
-                        new_id = _upload_as_google_doc(drive, docs, stage_id, doc_name, matched_file)
+                        new_id = create_google_doc(docs, drive, stage_id, doc_name, extracted_text)
                         dec.createdFileId = new_id
                         dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
                         dec.moved = True
                     except Exception as e:
-                        dec.error = f"Upload failed: {e}"
+                        dec.error = f"Failed to extract and create doc: {e}"
                 else:
                     dec.moved = False
 
             decisions.append(dec)
 
     return UploadCVsResponse(
-        message="Processed uploadCVs",
+        message="Processed uploadCVs with text extraction",
         dryRun=dryRun,
         thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD, "role": _ROLE_SCORE_THRESHOLD},
         needsClarification=needs_clarification,
@@ -1960,7 +1960,6 @@ async def upload_cvs(
         roleSuggestions=role_suggestions,
         decisions=decisions
     )
-
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
