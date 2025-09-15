@@ -1777,10 +1777,10 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
 
 class UploadCVItem(BaseModel):
     candidateName: str
-    positionId: str  # role folder ID
-    stageQuery: str  # stage name (e.g., "HR Screening")
-    roleQuery: Optional[str] = None
-    content: str  # 👈 extracted CV text provided by GPT
+    positionId: Optional[str] = None  # role folder ID, optional
+    stageQuery: str                   # stage name (e.g., "HR Screening")
+    roleQuery: Optional[str] = None   # fuzzy role name if no positionId
+    content: str                      # extracted CV text provided by GPT
 
 
 class UploadCVsRequest(BaseModel):
