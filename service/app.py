@@ -9,6 +9,177 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile as StarletteUploadFile  # type hinting only
+from difflib import SequenceMatcher
+
+
+# =========================
+# Fuzzy & Parse Helpers. Move canddiates from stage to stage
+# =========================
+
+_NAME_SCORE_THRESHOLD = int(os.environ.get("NAME_SCORE_THRESHOLD", "70"))
+_STAGE_SCORE_THRESHOLD = int(os.environ.get("STAGE_SCORE_THRESHOLD", "70"))
+
+_AND_SPLIT_RE = re.compile(r"\s*(?:,| and )\s*", re.IGNORECASE)
+_TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+def _token_set_ratio(a: str, b: str) -> int:
+    """
+    Simple token-set similarity (0..100). No external deps.
+    """
+    ta = set(_norm(a).split())
+    tb = set(_norm(b).split())
+    if not ta or not tb:
+        return 0
+    inter = ta & tb
+    if not inter:
+        # fallback to SequenceMatcher if token sets do not intersect
+        return int(SequenceMatcher(None, _norm(a), _norm(b)).ratio() * 100)
+    # Jaccard-style scaled to 100
+    score = 100 * len(inter) / len(ta | tb)
+    # Blend with SequenceMatcher for better partials
+    sm = int(SequenceMatcher(None, _norm(a), _norm(b)).ratio() * 100)
+    return int((score * 0.6) + (sm * 0.4))
+
+def _best_match(query: str, candidates: Iterable[Tuple[str, Any]]) -> Tuple[int, Tuple[str, Any] | None]:
+    """
+    candidates: iterable of (display_name, payload)
+    Returns (score, (display_name, payload) or (0, None))
+    """
+    best = (0, None)
+    for name, payload in candidates:
+        sc = _token_set_ratio(query, name)
+        if sc > best[0]:
+            best = (sc, (name, payload))
+    return best
+
+def _parse_move_prompt(prompt: str) -> list[dict]:
+    """
+    Parse strings like:
+      "move alice and bob to onsite, and charlie to offer accepted"
+    into:
+      [ { "candidateQueries": ["alice", "bob"], "stageQuery": "onsite" },
+        { "candidateQueries": ["charlie"], "stageQuery": "offer accepted" } ]
+    Very forgiving with commas/ands.
+    """
+    text = prompt.strip()
+    # split into "... to STAGE" clauses while retaining stage parts
+    # We'll greedily split by ' to ' boundaries.
+    parts = re.split(r"\s*\bto\b\s*", text, flags=re.IGNORECASE)
+    groups = []
+    if len(parts) < 2:
+        # no 'to' -> interpret whole thing as candidates with missing stage (handled later)
+        return []
+
+    # Rebuild pairs: [candidates_part, stage_part] [+ any next candidates part consumed already]
+    # Example: ["move alice and bob ", " onsite, and charlie ", " offer accepted"]
+    # We walk in steps of 2.
+    head = parts[0]
+    tail = parts[1:]
+    # The first "candidates" segment is inside head's trailing text.
+    current_candidates_text = head
+
+    for i, seg in enumerate(tail):
+        # seg starts with stage (possibly followed by ", and NAME(S)" that actually belong to the next clause)
+        # Try to split stage from the next " , and ... " that signals a new candidate group
+        # We'll look for a ", and " followed by a name+ " to " later; but to keep it robust:
+        # take everything up to the last comma/and chunk as stage, unless another ' to ' exists (already split).
+        # Simpler: take whole seg as stage for this group; any subsequent group comes from subsequent iterations.
+        stage_text = seg
+
+        # Build candidate queries from the previous chunk
+        cand_text = re.sub(r"^\s*move\s+", "", current_candidates_text, flags=re.IGNORECASE)
+        cand_text = cand_text.strip(" ,.")
+        if cand_text:
+            cand_list = [c for c in _AND_SPLIT_RE.split(cand_text) if c]
+            groups.append({
+                "candidateQueries": cand_list,
+                "stageQuery": stage_text.strip(" ,.")
+            })
+
+        # Prepare for next candidates chunk: by default it's empty unless next segment exists
+        current_candidates_text = ""
+
+    return groups
+
+
+# =========================
+# Drive Scanners for a Position
+# =========================
+
+def _load_pipeline_stages(drive, role_id: str) -> list[dict]:
+    """
+    Given a role folder ID, return list of stage dicts under its 'Hiring Pipeline'.
+    """
+    pipeline = _find_child_folder_by_name(drive, role_id, "Hiring Pipeline")
+    if not pipeline:
+        return []
+    stages = list(_iter_child_folders(drive, pipeline["id"]))
+    return [{"id": s["id"], "name": s.get("name", "")} for s in stages]
+
+def _scan_stage_files(drive, stage_id: str) -> list[dict]:
+    """
+    Return files (id, name, parents, mimeType) for a stage.
+    """
+    q = (
+        "trashed=false "
+        "and mimeType!='application/vnd.google-apps.folder' "
+        f"and '{stage_id}' in parents"
+    )
+    # include parents to allow move operation computation
+    items = []
+    for f in _drive_list(
+        drive,
+        q=q,
+        fields="nextPageToken, files(id,name,mimeType,parents)"
+    ):
+        items.append({"id": f["id"], "name": f.get("name", ""), "parents": f.get("parents", []), "mimeType": f.get("mimeType", "")})
+    return items
+
+def _build_candidate_index(drive, role_id: str) -> tuple[list[dict], dict]:
+    """
+    Build an index of all files inside every stage under 'Hiring Pipeline' for a role.
+    Returns (stages, {fileId: {..., stageId, stageName}}).
+    """
+    stages = _load_pipeline_stages(drive, role_id)
+    file_index = {}
+    for st in stages:
+        for f in _scan_stage_files(drive, st["id"]):
+            file_index[f["id"]] = {
+                "id": f["id"],
+                "name": f["name"],
+                "stageId": st["id"],
+                "stageName": st["name"],
+                "mimeType": f["mimeType"],
+            }
+    return stages, file_index
+
+def _list_roles_under_department(drive, dept_folder_id: str) -> list[dict]:
+    return [{"id": r["id"], "name": r.get("name", "")} for r in _iter_child_folders(drive, dept_folder_id)]
+
+
+# =========================
+# Resolution & Move Engine
+# =========================
+
+def _resolve_best_stage(stage_query: str, stages: list[dict]) -> tuple[int, dict | None]:
+    return _best_match(stage_query, [(s["name"], s) for s in stages])
+
+def _resolve_best_candidate_file(cand_query: str, file_index: dict) -> tuple[int, dict | None]:
+    return _best_match(cand_query, [(meta["name"], meta) for meta in file_index.values()])
+
+def _move_file_between_stages(drive, file_id: str, from_stage_id: str, to_stage_id: str) -> dict:
+    return drive.files().update(
+        fileId=file_id,
+        addParents=to_stage_id,
+        removeParents=from_stage_id,
+        fields="id, parents",
+        supportsAllDrives=True
+    ).execute()
+
+
 
 # Size/time limits
 MAX_FILE_BYTES = int(os.environ.get("MAX_FILE_BYTES", str(25 * 1024 * 1024)))  # 25 MB
@@ -1385,6 +1556,188 @@ def get_file_text(
         text=text,
         error=err
     )
+
+# =========================
+# Pydantic models for Move API
+# =========================
+
+class MoveGroup(BaseModel):
+    candidateQueries: List[str] = Field(..., description="Names/partials/typos allowed")
+    stageQuery: str = Field(..., description="Target stage name (fuzzy)")
+
+class MoveByPromptRequest(BaseModel):
+    positionId: str = Field(..., description="Role folder ID")
+    prompt: str = Field(..., description="Free-text instruction like 'move alice and bob to onsite'")
+    dryRun: bool = False
+    userEmail: Optional[str] = None
+
+class MoveStructuredRequest(BaseModel):
+    positionId: str = Field(..., description="Role folder ID")
+    moves: List[MoveGroup]
+    dryRun: bool = False
+    userEmail: Optional[str] = None
+
+class MoveDecision(BaseModel):
+    candidateQuery: str
+    candidateMatchedName: Optional[str] = None
+    candidateFileId: Optional[str] = None
+    candidateScore: int
+    fromStageId: Optional[str] = None
+    fromStageName: Optional[str] = None
+    toStageQuery: str
+    toStageId: Optional[str] = None
+    toStageName: Optional[str] = None
+    stageScore: int
+    moved: bool
+    error: Optional[str] = None
+
+class MoveResponse(BaseModel):
+    message: str
+    positionId: str
+    dryRun: bool
+    thresholds: Dict[str, int]
+    decisions: List[MoveDecision]
+
+# =========================
+# POST /candidates/moveByPrompt
+# =========================
+@app.post("/candidates/moveByPrompt", response_model=MoveResponse)
+def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    # Build stage + file indexes for the role (position)
+    stages, file_index = _build_candidate_index(drive, body.positionId)
+    if not stages:
+        raise HTTPException(404, "Hiring Pipeline / stages not found under the specified role")
+
+    groups = _parse_move_prompt(body.prompt)
+    if not groups:
+        raise HTTPException(400, "Could not parse any 'candidates → stage' group from the prompt")
+
+    decisions: List[MoveDecision] = []
+
+    for g in groups:
+        # Resolve stage once per group
+        stage_score, stage_match = _resolve_best_stage(g["stageQuery"], stages)
+        for cand_q in g["candidateQueries"]:
+            cand_score, cand_match = _resolve_best_candidate_file(cand_q, file_index)
+            decision = MoveDecision(
+                candidateQuery=cand_q,
+                candidateMatchedName=cand_match["name"] if cand_match else None,
+                candidateFileId=cand_match["id"] if cand_match else None,
+                candidateScore=cand_score,
+                fromStageId=cand_match["stageId"] if cand_match else None,
+                fromStageName=cand_match["stageName"] if cand_match else None,
+                toStageQuery=g["stageQuery"],
+                toStageId=stage_match["id"] if stage_match else None,
+                toStageName=stage_match["name"] if stage_match else None,
+                stageScore=stage_score,
+                moved=False,
+                error=None
+            )
+
+            # Validation / thresholds
+            if not cand_match:
+                decision.error = "No candidate file matched"
+            elif cand_score < _NAME_SCORE_THRESHOLD:
+                decision.error = f"Low candidate match score ({cand_score}<{_NAME_SCORE_THRESHOLD})"
+            elif not stage_match:
+                decision.error = "No target stage matched"
+            elif stage_score < _STAGE_SCORE_THRESHOLD:
+                decision.error = f"Low stage match score ({stage_score}<{_STAGE_SCORE_THRESHOLD})"
+            elif cand_match["stageId"] == stage_match["id"]:
+                decision.error = "Already in target stage"
+            else:
+                if not body.dryRun:
+                    try:
+                        _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
+                        decision.moved = True
+                        # Update local index so subsequent groups see the new stage
+                        file_index[cand_match["id"]]["stageId"] = stage_match["id"]
+                        file_index[cand_match["id"]]["stageName"] = stage_match["name"]
+                    except Exception as e:
+                        decision.error = f"Move failed: {e}"
+                else:
+                    decision.moved = False  # dry run
+
+            decisions.append(decision)
+
+    return MoveResponse(
+        message="Processed moveByPrompt",
+        positionId=body.positionId,
+        dryRun=body.dryRun,
+        thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
+        decisions=decisions
+    )
+
+# =========================
+# POST /candidates/move (structured)
+# =========================
+@app.post("/candidates/move", response_model=MoveResponse)
+def move_candidates_structured(request: Request, body: MoveStructuredRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    stages, file_index = _build_candidate_index(drive, body.positionId)
+    if not stages:
+        raise HTTPException(404, "Hiring Pipeline / stages not found under the specified role")
+
+    decisions: List[MoveDecision] = []
+
+    for grp in body.moves:
+        stage_score, stage_match = _resolve_best_stage(grp.stageQuery, stages)
+        for cand_q in grp.candidateQueries:
+            cand_score, cand_match = _resolve_best_candidate_file(cand_q, file_index)
+            decision = MoveDecision(
+                candidateQuery=cand_q,
+                candidateMatchedName=cand_match["name"] if cand_match else None,
+                candidateFileId=cand_match["id"] if cand_match else None,
+                candidateScore=cand_score,
+                fromStageId=cand_match["stageId"] if cand_match else None,
+                fromStageName=cand_match["stageName"] if cand_match else None,
+                toStageQuery=grp.stageQuery,
+                toStageId=stage_match["id"] if stage_match else None,
+                toStageName=stage_match["name"] if stage_match else None,
+                stageScore=stage_score,
+                moved=False,
+                error=None
+            )
+
+            if not cand_match:
+                decision.error = "No candidate file matched"
+            elif cand_score < _NAME_SCORE_THRESHOLD:
+                decision.error = f"Low candidate match score ({cand_score}<{_NAME_SCORE_THRESHOLD})"
+            elif not stage_match:
+                decision.error = "No target stage matched"
+            elif stage_score < _STAGE_SCORE_THRESHOLD:
+                decision.error = f"Low stage match score ({stage_score}<{_STAGE_SCORE_THRESHOLD})"
+            elif cand_match["stageId"] == stage_match["id"]:
+                decision.error = "Already in target stage"
+            else:
+                if not body.dryRun:
+                    try:
+                        _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
+                        decision.moved = True
+                        file_index[cand_match["id"]]["stageId"] = stage_match["id"]
+                        file_index[cand_match["id"]]["stageName"] = stage_match["name"]
+                    except Exception as e:
+                        decision.error = f"Move failed: {e}"
+                else:
+                    decision.moved = False
+
+            decisions.append(decision)
+
+    return MoveResponse(
+        message="Processed structured move",
+        positionId=body.positionId,
+        dryRun=body.dryRun,
+        thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
+        decisions=decisions
+    )
+
 
 
 
