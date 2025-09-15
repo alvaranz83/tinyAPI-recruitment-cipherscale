@@ -1403,15 +1403,14 @@ class DepartmentsRolesStagesResponse(BaseModel):
     departments: List[DepartmentWithRolesStages]
 
     
-
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
 def candidates_summary_raw(
     request: Request,
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Debug version: Returns Departments → Roles → Stages (metadata only),
-    with console logs to trace why 0 candidates are being returned.
+    Recursive version: Returns Departments → Roles → Stages → Candidate files.
+    Fetches the whole folder tree under DEPARTMENTS_FOLDER_ID.
     """
 
     require_api_key(request)
@@ -1425,30 +1424,32 @@ def candidates_summary_raw(
     logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
 
     # -------------------------------
-    # Bulk fetch everything in one go
+    # Recursive Drive fetch
     # -------------------------------
-    def _fetch_all_drive_items(drive, root_id: str) -> list[dict]:
+    def _fetch_all_drive_items_recursive(folder_id: str) -> list[dict]:
         items = []
         page_token = None
         while True:
             resp = drive.files().list(
-                q=f"'{root_id}' in parents and trashed=false",
+                q=f"'{folder_id}' in parents and trashed=false",
                 corpora="allDrives",
                 includeItemsFromAllDrives=True,
                 supportsAllDrives=True,
                 fields="nextPageToken, files(id,name,mimeType,parents)",
                 pageToken=page_token
             ).execute()
-            items.extend(resp.get("files", []))
+            children = resp.get("files", [])
+            items.extend(children)
+            for child in children:
+                if child.get("mimeType") == "application/vnd.google-apps.folder":
+                    items.extend(_fetch_all_drive_items_recursive(child["id"]))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
         return items
 
-    all_items = _fetch_all_drive_items(drive, DEPARTMENTS_FOLDER_ID)
-    logger.info("📦 Total items fetched under DEPARTMENTS_FOLDER_ID=%s: %d", DEPARTMENTS_FOLDER_ID, len(all_items))
-    for f in all_items:
-        logger.info("  - %s (%s) [mime=%s parents=%s]", f.get("name"), f.get("id"), f.get("mimeType"), f.get("parents"))
+    all_items = _fetch_all_drive_items_recursive(DEPARTMENTS_FOLDER_ID)
+    logger.info("📦 Total items fetched (recursive) under DEPARTMENTS_FOLDER_ID=%s: %d", DEPARTMENTS_FOLDER_ID, len(all_items))
 
     # -------------------------------
     # Group items by parent folder
@@ -1468,7 +1469,7 @@ def candidates_summary_raw(
     FOLDER_MIME = "application/vnd.google-apps.folder"
 
     # -------------------------------
-    # Build hierarchy in memory
+    # Build hierarchy
     # -------------------------------
     departments_out: List[DepartmentWithRolesStages] = []
 
@@ -1484,11 +1485,12 @@ def candidates_summary_raw(
             logger.info("  📌 Role: %s (%s)", role_name, role_id)
             stages_out: List[StageLite] = []
 
-            # Find "Hiring Pipeline" under this role
+            # Find "Hiring Pipeline" (case-insensitive, strip spaces)
             pipelines = [f for f in get_children(role_id, FOLDER_MIME)]
-            logger.info("    🔎 Pipelines found under role %s: %s", role_name, [p.get("name") for p in pipelines])
-
-            pipeline = next((f for f in pipelines if f.get("name") == "Hiring Pipeline"), None)
+            pipeline = next(
+                (f for f in pipelines if f.get("name", "").strip().lower() == "hiring pipeline"),
+                None
+            )
             if not pipeline:
                 logger.warning("    ⚠️ No 'Hiring Pipeline' folder under role %s", role_name)
             else:
@@ -1534,7 +1536,7 @@ def candidates_summary_raw(
     logger.info("✅ Built departments_out with %d departments", len(departments_out))
 
     return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (with debug logs)",
+        message="Departments, roles, and stages collected successfully (recursive)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
