@@ -1771,193 +1771,90 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
         decisions=decisions
     )
 
+# =========================
+# Pydantic models for UploadCVs
+# =========================
+
+class UploadCVItem(BaseModel):
+    candidateName: str
+    positionId: str  # role folder ID
+    stageQuery: str  # stage name (e.g., "HR Screening")
+    roleQuery: Optional[str] = None
+    content: str  # 👈 extracted CV text provided by GPT
+
+
+class UploadCVsRequest(BaseModel):
+    items: List[UploadCVItem]
+    dryRun: bool = False
+    userEmail: Optional[str] = None
+
+
 class UploadCVItemDecision(BaseModel):
-    candidateQuery: str
-    candidateResolvedName: Optional[str] = None
-    candidateScore: int
-    fileName: Optional[str] = None
-    positionQuery: Optional[str] = None
-    positionId: Optional[str] = None
-    positionName: Optional[str] = None
-    positionScore: int
-    stageQuery: Optional[str] = None
-    stageId: Optional[str] = None
-    stageName: Optional[str] = None
-    stageScore: int
+    candidateName: str
+    positionId: str
+    stageQuery: str
+    roleQuery: Optional[str] = None
     createdFileId: Optional[str] = None
     createdDocLink: Optional[str] = None
     error: Optional[str] = None
-    moved: bool = False  # semantic parity with other endpoints
+    moved: bool = False
+    cvTextPreview: Optional[str] = None  # Optional preview of what was saved
+
 
 class UploadCVsResponse(BaseModel):
     message: str
     dryRun: bool
-    thresholds: Dict[str, int]
-    needsClarification: bool
-    clarificationReason: Optional[str] = None
-    roleSuggestions: Optional[List[Dict[str, Any]]] = None  # when role missing/ambiguous
     decisions: List[UploadCVItemDecision]
 
-class UploadCVsRequest(BaseModel):
-    # for JSON fallback; in multipart these arrive as form fields
-    prompt: str
-    positionId: Optional[str] = None  # if provided, applies as default role for groups w/o roleQuery
-    dryRun: bool = False
-    userEmail: Optional[str] = None
+
+# =========================
+# POST /candidates/uploadCVs
+# =========================
 
 @app.post("/candidates/uploadCVs", response_model=UploadCVsResponse)
-async def upload_cvs(
-    request: Request,
-    prompt: str = Form(..., description="Free-text instruction, e.g. 'upload Alice to Onsite for Backend'"),
-    positionId: Optional[str] = Form(None, description="Role folder ID (default for groups lacking 'for ROLE')"),
-    dryRun: bool = Form(False),
-    userEmail: Optional[str] = Form(None),
-    files: List[UploadFile] = File(..., description="One or more candidate CV files"),
-):
+async def upload_cvs(request: Request, body: UploadCVsRequest):
     """
-    Bulk-upload CVs into Hiring Pipeline stages, with fuzzy resolution of candidate names,
-    stages, and roles. Instead of uploading the raw file, we:
-      * Extract plain text from the CV (PDF/DOCX/DOC).
-      * Create a new Google Doc with that extracted text.
-      * Place it in the right stage folder.
+    Upload CVs into Hiring Pipeline stages using extracted text (provided by GPT).
+    No raw file parsing here — only accepts plain text `content`.
     """
     require_api_key(request)
-    subject = userEmail or _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
-
-    groups = _parse_upload_prompt(prompt)
-    if not groups:
-        raise HTTPException(400, "Could not parse any 'candidates → stage [for role]' group from the prompt")
-
     decisions: List[UploadCVItemDecision] = []
-    needs_clarification = False
-    clar_reason = None
-    role_suggestions: List[Dict[str, Any]] | None = None
 
-    for g in groups:
-        stage_query = g.get("stageQuery") or ""
-        role_query = g.get("roleQuery")
+    for item in body.items:
+        dec = UploadCVItemDecision(
+            candidateName=item.candidateName,
+            positionId=item.positionId,
+            stageQuery=item.stageQuery,
+            roleQuery=item.roleQuery,
+            cvTextPreview=item.content[:200] + "..." if item.content else None,  # optional preview
+        )
 
-        # ---- Resolve role ----
-        resolved_role_id = None
-        resolved_role_name = None
-        role_score = 0
-
-        if role_query:
-            role_score, role_match, _ = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_query)
-            if role_match and role_score >= _ROLE_SCORE_THRESHOLD:
-                resolved_role_id = role_match["id"]
-                resolved_role_name = role_match["name"]
-            else:
-                needs_clarification = True
-                clar_reason = "Role not found or low score"
-                all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
-                role_suggestions = sorted(
-                    [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": _token_set_ratio(role_query, r["name"])} for r in all_roles],
-                    key=lambda x: x["score"],
-                    reverse=True
-                )[:6]
-        elif positionId:
-            try:
-                meta = drive.files().get(fileId=positionId, fields="id,name").execute()
-                resolved_role_id = meta["id"]
-                resolved_role_name = meta.get("name", "")
-                role_score = 100
-            except Exception as e:
-                raise HTTPException(404, f"PositionId '{positionId}' not found: {e}")
-        else:
-            needs_clarification = True
-            clar_reason = "Role not specified"
-            all_roles = _list_all_roles(drive, DEPARTMENTS_FOLDER_ID)
-            role_suggestions = [{"id": r["id"], "name": r["name"], "deptName": r["deptName"], "score": 0} for r in all_roles[:10]]
-
-        # ---- Resolve stage ----
-        stage_id, stage_name, stage_score = None, None, 0
-        if resolved_role_id:
-            stages, _ = _build_candidate_index(drive, resolved_role_id)
-            stage_score, stage_match, _ = _resolve_best_stage(stage_query, stages)
-            if stage_match and stage_score >= _STAGE_SCORE_THRESHOLD:
-                stage_id = stage_match["id"]
-                stage_name = stage_match["name"]
-
-        # ---- Assign files to candidates ----
-        cand_display_names = [q.strip() for q in g.get("candidateQueries", [])]
-        file_map = _assign_files_to_candidates(files, cand_display_names)
-
-        for cand_q in g.get("candidateQueries", []):
-            matched_file = file_map.get(cand_q)
-            cand_score = _token_set_ratio(cand_q, _strip_ext(matched_file.filename) if matched_file else "")
-            cand_name_resolved = _strip_ext(matched_file.filename) if matched_file else cand_q
-
-            dec = UploadCVItemDecision(
-                candidateQuery=cand_q,
-                candidateResolvedName=cand_name_resolved,
-                candidateScore=cand_score,
-                fileName=(matched_file.filename if matched_file else None),
-                positionQuery=role_query,
-                positionId=resolved_role_id,
-                positionName=resolved_role_name,
-                positionScore=role_score,
-                stageQuery=stage_query,
-                stageId=stage_id,
-                stageName=stage_name,
-                stageScore=stage_score,
-            )
-
-            if not resolved_role_id:
-                dec.error = "Role unresolved. Please specify the role."
-            elif not stage_id:
-                dec.error = f"Target stage unresolved or low score ({stage_score}<{_STAGE_SCORE_THRESHOLD})."
-            elif not matched_file:
-                dec.error = "No file matched for this candidate."
-            elif cand_score < _NAME_SCORE_THRESHOLD:
-                dec.error = f"Low candidate/file match score ({cand_score}<{_NAME_SCORE_THRESHOLD})."
-            else:
-                if not dryRun:
-                    try:
-                        # ✅ Extract text from the uploaded CV
-                        file_bytes = await matched_file.read()
-                        temp_id = None
-                        try:
-                            # Upload temporarily to Drive for conversion
-                            buf = io.BytesIO(file_bytes)
-                            media = MediaIoBaseUpload(buf, mimetype=matched_file.content_type, resumable=False)
-                            temp = drive.files().create(
-                                body={"name": matched_file.filename, "mimeType": "application/vnd.google-apps.document"},
-                                media_body=media,
-                                fields="id",
-                                supportsAllDrives=True
-                            ).execute()
-                            temp_id = temp.get("id")
-                            extracted_text = _doc_text_from_google_doc(docs, temp_id)
-                        finally:
-                            if temp_id:
-                                drive.files().delete(fileId=temp_id, supportsAllDrives=True).execute()
-
-                        # ✅ Create final Google Doc with extracted text
-                        doc_name = f"{cand_name_resolved} - CV"
-                        new_id = create_google_doc(docs, drive, stage_id, doc_name, extracted_text)
-                        dec.createdFileId = new_id
-                        dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
-                        dec.moved = True
-                    except Exception as e:
-                        dec.error = f"Failed to extract and create doc: {e}"
-                else:
-                    dec.moved = False
-
+        if not item.content.strip():
+            dec.error = "No CV text provided"
             decisions.append(dec)
+            continue
+
+        if not body.dryRun:
+            try:
+                # Create Google Doc with provided text
+                doc_name = f"{item.candidateName} - CV"
+                new_id = create_google_doc(docs, drive, item.positionId, doc_name, item.content)
+                dec.createdFileId = new_id
+                dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
+                dec.moved = True
+            except Exception as e:
+                dec.error = f"Failed to create doc: {e}"
+        else:
+            dec.moved = False
+
+        decisions.append(dec)
 
     return UploadCVsResponse(
-        message="Processed uploadCVs with text extraction",
-        dryRun=dryRun,
-        thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD, "role": _ROLE_SCORE_THRESHOLD},
-        needsClarification=needs_clarification,
-        clarificationReason=clar_reason,
-        roleSuggestions=role_suggestions,
+        message="Processed uploadCVs with GPT-extracted CV text",
+        dryRun=body.dryRun,
         decisions=decisions
     )
 
