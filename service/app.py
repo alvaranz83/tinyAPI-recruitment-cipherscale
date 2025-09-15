@@ -1402,15 +1402,15 @@ class DepartmentsRolesStagesResponse(BaseModel):
     scope: CandidatesSummaryScope  # <-- now matches schema
     departments: List[DepartmentWithRolesStages]
 
-    
+
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
 def candidates_summary_raw(
     request: Request,
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Recursive version: Returns Departments → Roles → Stages → Candidate files.
-    Fetches the whole folder tree under DEPARTMENTS_FOLDER_ID.
+    Optimized: Returns Departments → Roles → Stages (metadata only).
+    Fetches ALL descendants of DEPARTMENTS_FOLDER_ID in one bulk query.
     """
 
     require_api_key(request)
@@ -1424,32 +1424,28 @@ def candidates_summary_raw(
     logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
 
     # -------------------------------
-    # Recursive Drive fetch
+    # Bulk fetch ALL descendants in one query
     # -------------------------------
-    def _fetch_all_drive_items_recursive(folder_id: str) -> list[dict]:
+    def _fetch_all_drive_items(drive) -> list[dict]:
         items = []
         page_token = None
         while True:
             resp = drive.files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
+                q="trashed=false",
                 corpora="allDrives",
                 includeItemsFromAllDrives=True,
                 supportsAllDrives=True,
                 fields="nextPageToken, files(id,name,mimeType,parents)",
                 pageToken=page_token
             ).execute()
-            children = resp.get("files", [])
-            items.extend(children)
-            for child in children:
-                if child.get("mimeType") == "application/vnd.google-apps.folder":
-                    items.extend(_fetch_all_drive_items_recursive(child["id"]))
+            items.extend(resp.get("files", []))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
         return items
 
-    all_items = _fetch_all_drive_items_recursive(DEPARTMENTS_FOLDER_ID)
-    logger.info("📦 Total items fetched (recursive) under DEPARTMENTS_FOLDER_ID=%s: %d", DEPARTMENTS_FOLDER_ID, len(all_items))
+    all_items = _fetch_all_drive_items(drive)
+    logger.info("📦 Total items fetched from Drive (bulk): %d", len(all_items))
 
     # -------------------------------
     # Group items by parent folder
@@ -1463,43 +1459,41 @@ def candidates_summary_raw(
         kids = children_by_parent.get(pid, [])
         if mime_filter:
             kids = [c for c in kids if c.get("mimeType") == mime_filter]
-        logger.info("📂 Children of %s → %s", pid, [(c.get("name"), c.get("id"), c.get("mimeType")) for c in kids])
         return kids
 
     FOLDER_MIME = "application/vnd.google-apps.folder"
 
     # -------------------------------
-    # Build hierarchy
+    # Build hierarchy in memory
     # -------------------------------
     departments_out: List[DepartmentWithRolesStages] = []
 
     for dept in get_children(DEPARTMENTS_FOLDER_ID, FOLDER_MIME):
         dept_id = dept["id"]
         dept_name = dept.get("name", "(unnamed)")
-        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
         roles_out: List[RoleWithStages] = []
+        dept_candidate_count = 0
+        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
 
         for role in get_children(dept_id, FOLDER_MIME):
             role_id = role["id"]
             role_name = role.get("name", "(unnamed)")
-            logger.info("  📌 Role: %s (%s)", role_name, role_id)
             stages_out: List[StageLite] = []
+            role_candidate_count = 0
+            logger.info("  📌 Role: %s (%s)", role_name, role_id)
 
-            # Find "Hiring Pipeline" (case-insensitive, strip spaces)
+            # Find "Hiring Pipeline" (case-insensitive)
             pipelines = [f for f in get_children(role_id, FOLDER_MIME)]
             pipeline = next(
                 (f for f in pipelines if f.get("name", "").strip().lower() == "hiring pipeline"),
                 None
             )
             if not pipeline:
-                logger.warning("    ⚠️ No 'Hiring Pipeline' folder under role %s", role_name)
+                logger.warning("    ⚠️ No 'Hiring Pipeline' under role %s", role_name)
             else:
-                logger.info("    ✅ Found Hiring Pipeline: %s (%s)", pipeline.get("name"), pipeline["id"])
                 for stage in get_children(pipeline["id"], FOLDER_MIME):
                     stage_id = stage["id"]
                     stage_name = stage.get("name", "(unnamed)")
-                    logger.info("      📂 Stage: %s (%s)", stage_name, stage_id)
-
                     stage_files = [
                         StageFileExtract(
                             id=f["id"],
@@ -1511,9 +1505,12 @@ def candidates_summary_raw(
                         for f in get_children(stage_id)
                         if f.get("mimeType") != FOLDER_MIME
                     ]
+                    stage_count = len(stage_files)
+                    role_candidate_count += stage_count
+                    logger.info("    📂 Stage: %s (%s) → %d candidates", stage_name, stage_id, stage_count)
 
                     for sf in stage_files:
-                        logger.info("        📄 Candidate file: %s (%s)", sf.name, sf.id)
+                        logger.info("      📄 Candidate: %s (%s)", sf.name, sf.id)
 
                     stages_out.append(StageLite(
                         id=stage_id,
@@ -1521,11 +1518,16 @@ def candidates_summary_raw(
                         files=stage_files
                     ))
 
+            dept_candidate_count += role_candidate_count
+            logger.info("  📊 Role total candidates: %s → %d", role_name, role_candidate_count)
+
             roles_out.append(RoleWithStages(
                 id=role_id,
                 name=role_name,
                 stages=stages_out
             ))
+
+        logger.info("🏢 Department total candidates: %s → %d", dept_name, dept_candidate_count)
 
         departments_out.append(DepartmentWithRolesStages(
             id=dept_id,
@@ -1536,7 +1538,7 @@ def candidates_summary_raw(
     logger.info("✅ Built departments_out with %d departments", len(departments_out))
 
     return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (recursive)",
+        message="Departments, roles, and stages collected successfully (bulk fetch)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
