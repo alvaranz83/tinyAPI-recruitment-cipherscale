@@ -1392,11 +1392,16 @@ class DepartmentWithRolesStages(BaseModel):
     name: str
     roles: List[RoleWithStages] = Field(default_factory=list)
 
+class CandidatesSummaryScope(BaseModel):
+    departmentsFolderId: str
+    impersonating: Optional[str] = None
+
 class DepartmentsRolesStagesResponse(BaseModel):
     message: str
     updatedAt: str  # ISO 8601 string
-    scope: Dict[str, Any]
+    scope: CandidatesSummaryScope  # <-- now matches schema
     departments: List[DepartmentWithRolesStages]
+
     
 
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
