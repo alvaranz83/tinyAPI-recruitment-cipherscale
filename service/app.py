@@ -1405,9 +1405,10 @@ def candidates_summary_raw(
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Returns Departments → Roles → Stages (without inline text extraction).
-    Only file metadata is included; text must be fetched separately via /candidates/fileText.
+    Optimized: Returns Departments → Roles → Stages (metadata only).
+    Fetches all Drive items in one bulk query and builds the tree in memory.
     """
+
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
@@ -1416,43 +1417,81 @@ def candidates_summary_raw(
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
+    # -------------------------------
+    # Bulk fetch everything in one go
+    # -------------------------------
+    def _fetch_all_drive_items(drive, root_id: str) -> list[dict]:
+        items = []
+        page_token = None
+        while True:
+            resp = drive.files().list(
+                q=f"'{root_id}' in parents and trashed=false",
+                corpora="allDrives",
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                fields="nextPageToken, files(id,name,mimeType,parents)",
+                pageToken=page_token
+            ).execute()
+            items.extend(resp.get("files", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return items
+
+    all_items = _fetch_all_drive_items(drive, DEPARTMENTS_FOLDER_ID)
+
+    # -------------------------------
+    # Group items by parent folder
+    # -------------------------------
+    children_by_parent: dict[str, list[dict]] = {}
+    for item in all_items:
+        for p in item.get("parents", []):
+            children_by_parent.setdefault(p, []).append(item)
+
+    def get_children(pid: str, mime_filter: Optional[str] = None) -> list[dict]:
+        kids = children_by_parent.get(pid, [])
+        if mime_filter:
+            return [c for c in kids if c.get("mimeType") == mime_filter]
+        return kids
+
+    FOLDER_MIME = "application/vnd.google-apps.folder"
+
+    # -------------------------------
+    # Build hierarchy in memory
+    # -------------------------------
     departments_out: List[DepartmentWithRolesStages] = []
 
-    for dept in _iter_child_folders(drive, DEPARTMENTS_FOLDER_ID):
-        dept_id = dept.get("id")
-        dept_name = dept.get("name") or "(unnamed)"
+    for dept in get_children(DEPARTMENTS_FOLDER_ID, FOLDER_MIME):
+        dept_id = dept["id"]
+        dept_name = dept.get("name", "(unnamed)")
         roles_out: List[RoleWithStages] = []
 
-        for role in _iter_child_folders(drive, dept_id):
-            role_id = role.get("id")
-            role_name = role.get("name") or "(unnamed)"
+        for role in get_children(dept_id, FOLDER_MIME):
+            role_id = role["id"]
+            role_name = role.get("name", "(unnamed)")
             stages_out: List[StageLite] = []
 
-            pipeline = _find_child_folder_by_name(drive, role_id, "Hiring Pipeline")
+            # Find "Hiring Pipeline" under this role
+            pipeline = next(
+                (f for f in get_children(role_id, FOLDER_MIME) if f.get("name") == "Hiring Pipeline"),
+                None
+            )
             if pipeline:
-                for stage in _iter_child_folders(drive, pipeline["id"]):
-                    stage_id = stage.get("id")
-                    stage_name = stage.get("name") or "(unnamed)"
+                for stage in get_children(pipeline["id"], FOLDER_MIME):
+                    stage_id = stage["id"]
+                    stage_name = stage.get("name", "(unnamed)")
 
-                    stage_files: List[StageFileExtract] = []
-                    try:
-                        for f in _iter_child_files(drive, stage_id):
-                            stage_files.append(StageFileExtract(
-                                id=f.get("id"),
-                                name=f.get("name", ""),
-                                mimeType=f.get("mimeType", ""),
-                                text=None,   # ✅ no inline extraction
-                                error=None
-                            ))
-                    except Exception as e:
-                        logger.exception("Failed listing files for stage %s (%s)", stage_name, stage_id)
-                        stage_files.append(StageFileExtract(
-                            id="",
-                            name="(stage scan error)",
-                            mimeType="",
+                    stage_files = [
+                        StageFileExtract(
+                            id=f["id"],
+                            name=f.get("name", ""),
+                            mimeType=f.get("mimeType", ""),
                             text=None,
-                            error=f"Failed scanning stage: {e}"
-                        ))
+                            error=None
+                        )
+                        for f in get_children(stage_id)
+                        if f.get("mimeType") != FOLDER_MIME
+                    ]
 
                     stages_out.append(StageLite(
                         id=stage_id,
@@ -1473,7 +1512,7 @@ def candidates_summary_raw(
         ))
 
     return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (metadata only)",
+        message="Departments, roles, and stages collected successfully (optimized)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
@@ -1481,6 +1520,7 @@ def candidates_summary_raw(
         },
         departments=departments_out,
     )
+
 
 @app.get("/candidates/fileText", response_model=StageFileExtract)
 def get_file_text(
