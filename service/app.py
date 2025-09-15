@@ -1815,11 +1815,16 @@ class UploadCVsResponse(BaseModel):
 async def upload_cvs(request: Request, body: UploadCVsRequest):
     """
     Upload CVs into Hiring Pipeline stages using extracted text (provided by GPT).
-    No raw file parsing here — only accepts plain text `content`.
+    If positionId is missing, we try to resolve it from roleQuery.
+    If stageQuery is fuzzy, we resolve it against the role’s Hiring Pipeline.
     """
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
     decisions: List[UploadCVItemDecision] = []
 
@@ -1829,8 +1834,46 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
             positionId=item.positionId,
             stageQuery=item.stageQuery,
             roleQuery=item.roleQuery,
-            cvTextPreview=item.content[:200] + "..." if item.content else None,  # optional preview
+            cvTextPreview=item.content[:200] + "..." if item.content else None,
         )
+
+        # Ensure we have a role folder ID
+        role_id = item.positionId
+        role_name_display = None
+        if not role_id:
+            if not item.roleQuery:
+                dec.error = "No positionId or roleQuery provided"
+                decisions.append(dec)
+                continue
+
+            # Fuzzy match role
+            score, match, role_name_display = _resolve_best_role_by_name(
+                drive, DEPARTMENTS_FOLDER_ID, item.roleQuery
+            )
+            if not match or score < _ROLE_SCORE_THRESHOLD:
+                dec.error = f"Could not resolve role '{item.roleQuery}' (score={score})"
+                decisions.append(dec)
+                continue
+
+            role_id = match["id"]
+            dec.positionId = role_id
+            dec.roleQuery = match["name"]
+
+        # Resolve stage inside role’s Hiring Pipeline
+        stages = _load_pipeline_stages(drive, role_id)
+        if not stages:
+            dec.error = f"No Hiring Pipeline found under role {dec.roleQuery or role_name_display}"
+            decisions.append(dec)
+            continue
+
+        stage_score, stage_match, stage_display = _resolve_best_stage(item.stageQuery, stages)
+        if not stage_match or stage_score < _STAGE_SCORE_THRESHOLD:
+            dec.error = f"Could not resolve stage '{item.stageQuery}' (score={stage_score})"
+            decisions.append(dec)
+            continue
+
+        target_stage_id = stage_match["id"]
+        dec.stageQuery = stage_match["name"]
 
         if not item.content.strip():
             dec.error = "No CV text provided"
@@ -1839,9 +1882,8 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
 
         if not body.dryRun:
             try:
-                # Create Google Doc with provided text
                 doc_name = f"{item.candidateName} - CV"
-                new_id = create_google_doc(docs, drive, item.positionId, doc_name, item.content)
+                new_id = create_google_doc(docs, drive, target_stage_id, doc_name, item.content)
                 dec.createdFileId = new_id
                 dec.createdDocLink = f"https://docs.google.com/document/d/{new_id}/edit"
                 dec.moved = True
