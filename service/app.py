@@ -1410,8 +1410,8 @@ def candidates_summary_raw(
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Optimized: Returns Departments → Roles → Stages (metadata only).
-    Fetches all Drive items in one bulk query and builds the tree in memory.
+    Debug version: Returns Departments → Roles → Stages (metadata only),
+    with console logs to trace why 0 candidates are being returned.
     """
 
     require_api_key(request)
@@ -1421,6 +1421,8 @@ def candidates_summary_raw(
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
 
     # -------------------------------
     # Bulk fetch everything in one go
@@ -1444,6 +1446,9 @@ def candidates_summary_raw(
         return items
 
     all_items = _fetch_all_drive_items(drive, DEPARTMENTS_FOLDER_ID)
+    logger.info("📦 Total items fetched under DEPARTMENTS_FOLDER_ID=%s: %d", DEPARTMENTS_FOLDER_ID, len(all_items))
+    for f in all_items:
+        logger.info("  - %s (%s) [mime=%s parents=%s]", f.get("name"), f.get("id"), f.get("mimeType"), f.get("parents"))
 
     # -------------------------------
     # Group items by parent folder
@@ -1456,7 +1461,8 @@ def candidates_summary_raw(
     def get_children(pid: str, mime_filter: Optional[str] = None) -> list[dict]:
         kids = children_by_parent.get(pid, [])
         if mime_filter:
-            return [c for c in kids if c.get("mimeType") == mime_filter]
+            kids = [c for c in kids if c.get("mimeType") == mime_filter]
+        logger.info("📂 Children of %s → %s", pid, [(c.get("name"), c.get("id"), c.get("mimeType")) for c in kids])
         return kids
 
     FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -1469,22 +1475,28 @@ def candidates_summary_raw(
     for dept in get_children(DEPARTMENTS_FOLDER_ID, FOLDER_MIME):
         dept_id = dept["id"]
         dept_name = dept.get("name", "(unnamed)")
+        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
         roles_out: List[RoleWithStages] = []
 
         for role in get_children(dept_id, FOLDER_MIME):
             role_id = role["id"]
             role_name = role.get("name", "(unnamed)")
+            logger.info("  📌 Role: %s (%s)", role_name, role_id)
             stages_out: List[StageLite] = []
 
             # Find "Hiring Pipeline" under this role
-            pipeline = next(
-                (f for f in get_children(role_id, FOLDER_MIME) if f.get("name") == "Hiring Pipeline"),
-                None
-            )
-            if pipeline:
+            pipelines = [f for f in get_children(role_id, FOLDER_MIME)]
+            logger.info("    🔎 Pipelines found under role %s: %s", role_name, [p.get("name") for p in pipelines])
+
+            pipeline = next((f for f in pipelines if f.get("name") == "Hiring Pipeline"), None)
+            if not pipeline:
+                logger.warning("    ⚠️ No 'Hiring Pipeline' folder under role %s", role_name)
+            else:
+                logger.info("    ✅ Found Hiring Pipeline: %s (%s)", pipeline.get("name"), pipeline["id"])
                 for stage in get_children(pipeline["id"], FOLDER_MIME):
                     stage_id = stage["id"]
                     stage_name = stage.get("name", "(unnamed)")
+                    logger.info("      📂 Stage: %s (%s)", stage_name, stage_id)
 
                     stage_files = [
                         StageFileExtract(
@@ -1497,6 +1509,9 @@ def candidates_summary_raw(
                         for f in get_children(stage_id)
                         if f.get("mimeType") != FOLDER_MIME
                     ]
+
+                    for sf in stage_files:
+                        logger.info("        📄 Candidate file: %s (%s)", sf.name, sf.id)
 
                     stages_out.append(StageLite(
                         id=stage_id,
@@ -1516,8 +1531,10 @@ def candidates_summary_raw(
             roles=roles_out
         ))
 
+    logger.info("✅ Built departments_out with %d departments", len(departments_out))
+
     return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (optimized)",
+        message="Departments, roles, and stages collected successfully (with debug logs)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
         scope={
             "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
