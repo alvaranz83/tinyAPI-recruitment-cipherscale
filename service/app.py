@@ -1369,10 +1369,11 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
 
 # ===== Pydantic models for Candidates summary/fileText =====
 
+
 class StageFileExtract(BaseModel):
-    id: str = ""
-    name: str = ""
-    mimeType: str = ""
+    id: str
+    name: str
+    mimeType: str
     text: Optional[str] = None
     error: Optional[str] = None
 
@@ -1391,16 +1392,12 @@ class DepartmentWithRolesStages(BaseModel):
     name: str
     roles: List[RoleWithStages] = Field(default_factory=list)
 
-class CandidatesSummaryScope(BaseModel):
-    departmentsFolderId: str
-    impersonating: Optional[str] = None
-
 class DepartmentsRolesStagesResponse(BaseModel):
     message: str
-    updatedAt: str  # ISO8601 datetime string
-    scope: CandidatesSummaryScope
-    departments: List[DepartmentWithRolesStages] = Field(default_factory=list)
-
+    updatedAt: str  # ISO 8601 string
+    scope: Dict[str, Any]
+    departments: List[DepartmentWithRolesStages]
+    
 
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
 def candidates_summary_raw(
