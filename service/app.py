@@ -1160,7 +1160,7 @@ def create_first_tech_interview_scoring(request: Request, body: CreateFirstTechI
     _, drive, docs = get_clients(subject)
 
     # ✅ Ensure Scoring Rubrics folder exists
-    scoring_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical interview Scoring Model")
+    scoring_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Scoring Model")
 
     # ✅ Check if candidate-specific scoring rubric already exists (idempotent)
     doc_name = f"{body.candidateName} - 1st Technical Interview Scoring Rubric"
