@@ -968,7 +968,7 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     _, drive, docs = get_clients(subject)
 
     # ✅ Always create a fresh subfolder for Screening
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Screening")
 
     # ✅ Default polished template
     content = body.content or f"""
@@ -1020,7 +1020,7 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
     _, drive, docs = get_clients(subject)
 
     # ✅ Ensure Screening Templates folder exists (create if missing)
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Screening")
 
     # ✅ Check if the candidate's interview doc already exists
     query = (
@@ -1109,7 +1109,7 @@ def create_scoring(request: Request, body: CreateScoringRequest):
     _, drive, docs = get_clients(subject)
 
     # ✅ Always create a fresh subfolder for Scoring
-    scoring_folder_id = create_named_subfolder(drive, body.positionId, "Scoring Rubrics")
+    scoring_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Scoring Model")
 
     # ✅ Default polished template
     content = body.content or f"""
@@ -1160,7 +1160,7 @@ def create_first_tech_interview_scoring(request: Request, body: CreateFirstTechI
     _, drive, docs = get_clients(subject)
 
     # ✅ Ensure Scoring Rubrics folder exists
-    scoring_folder_id = create_named_subfolder(drive, body.positionId, "Scoring Rubrics")
+    scoring_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical interview Scoring Model")
 
     # ✅ Check if candidate-specific scoring rubric already exists (idempotent)
     doc_name = f"{body.candidateName} - 1st Technical Interview Scoring Rubric"
