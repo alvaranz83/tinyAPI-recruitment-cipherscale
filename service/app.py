@@ -1006,6 +1006,96 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     }
 
 
+class CreateFirstTechInterviewRequest(BaseModel):
+    positionId: str
+    candidateName: str
+    content: Optional[str] = None
+    userEmail: Optional[str] = None  # for impersonation
+
+
+@app.post("/candidates/createFirstTechnicalInterview")
+def create_first_tech_interview(request: Request, body: CreateFirstTechInterviewRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    # ✅ Ensure Screening Templates folder exists (create if missing)
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "Screening Templates")
+
+    # ✅ Check if the candidate's interview doc already exists
+    query = (
+        "mimeType='application/vnd.google-apps.document' "
+        "and trashed=false "
+        f"and name='{body.candidateName} - 1st Technical Interview' "
+        f"and '{screening_folder_id}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if results.get("files"):
+        existing = results["files"][0]
+        return {
+            "message": f"1st Technical Interview doc already exists for {body.candidateName}",
+            "fileId": existing["id"],
+            "folderId": screening_folder_id,
+            "docLink": f"https://docs.google.com/document/d/{existing['id']}/edit",
+            "created": False
+        }
+
+    # ✅ Default polished template
+    content = body.content or f"""
+        1st Technical Interview – {body.candidateName}
+
+        Candidate: {body.candidateName}
+        Role: [Specify Role Here]
+        Date: ___________________________
+        Interviewer(s): ___________________________
+
+        Technical Questions:
+        - Q1: ______________________________________
+        - Q2: ______________________________________
+        - Q3: ______________________________________
+        - Q4: ______________________________________
+        - Q5: ______________________________________
+
+        Feedback:
+        - Strengths:
+        ____________________________________________
+
+        - Weaknesses:
+        ____________________________________________
+
+        Scorecard (1–5 for each dimension):
+        - Technical Knowledge: ___
+        - Problem Solving: ___
+        - Communication: ___
+        - Culture Fit: ___
+
+        Overall Recommendation:
+        - Strong Hire / Hire / Neutral / No Hire
+    """
+
+    # ✅ Create doc inside Screening Templates
+    file_id = create_google_doc(
+        docs, drive, screening_folder_id,
+        f"{body.candidateName} - 1st Technical Interview",
+        content
+    )
+
+    return {
+        "message": f"1st Technical Interview doc created for {body.candidateName}",
+        "fileId": file_id,
+        "folderId": screening_folder_id,
+        "docLink": f"https://docs.google.com/document/d/{file_id}/edit",
+        "created": True
+    }
+
+
+
 class CreateScoringRequest(BaseModel):
     positionId: str
     roleName: str
@@ -1925,7 +2015,6 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
         dryRun=body.dryRun,
         decisions=decisions
     )
-
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
