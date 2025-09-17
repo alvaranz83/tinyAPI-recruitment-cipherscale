@@ -923,6 +923,9 @@ def create_jd(request: Request, body: CreateJDRequest):
 
     # ✅ Always create a fresh subfolder for JD
     jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Descriptions")
+
+    # Create extra CV assessment folder
+    cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CV Assesment")
     
     # ✅ Default polished template
     content = body.content or f"""
