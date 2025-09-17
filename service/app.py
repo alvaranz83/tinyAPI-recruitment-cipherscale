@@ -2113,6 +2113,107 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
     )
 
 
+class CreateTAHRAssessmentRequest(BaseModel):
+    positionId: Optional[str] = None   # direct role folder ID if known
+    roleQuery: str                     # fuzzy role name if no ID provided
+    candidateName: str                 # candidate name/typo allowed
+    assessmentContent: str             # ✅ mandatory
+    transcriptContent: Optional[str] = None
+    geminiNotesContent: Optional[str] = None
+    userEmail: Optional[str] = None    # impersonation
+    dryRun: bool = False
+
+
+class CreateTAHRAssessmentResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    candidateMatchedName: str
+    createdDocs: Dict[str, str]   # { "assessment": link, "transcript": link, "geminiNotes": link }
+    errors: Optional[List[str]] = None
+
+
+@app.post("/candidates/createTAHRAssessment", response_model=CreateTAHRAssessmentResponse)
+def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    # Validate required params
+    if not body.assessmentContent.strip():
+        raise HTTPException(400, "TA/HR Assessment content is required")
+    if not (body.transcriptContent or body.geminiNotesContent):
+        raise HTTPException(400, "At least one of transcriptContent or geminiNotesContent must be provided")
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve Role
+    role_id = body.positionId
+    role_display = body.roleQuery
+    if not role_id:
+        score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
+        if not match or score < _ROLE_SCORE_THRESHOLD:
+            raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
+        role_id = match["id"]
+        role_display = match["name"]
+
+    # 🔍 Resolve Candidate
+    stages, file_index = _build_candidate_index(drive, role_id)
+    cand_score, cand_match, cand_display = _resolve_best_candidate_file(body.candidateName, file_index)
+    if not cand_match or cand_score < _NAME_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve candidate '{body.candidateName}' (score={cand_score})")
+
+    # ✅ Ensure TA/HR Assessment folder exists
+    assessment_folder_id = create_named_subfolder(drive, role_id, "TA/HR Assessment")
+
+    created_docs = {}
+    errors = []
+
+    def _save_doc(doc_name: str, content: str):
+        if body.dryRun:
+            return f"[DryRun] Would create: {doc_name}"
+        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content)
+        return f"https://docs.google.com/document/d/{new_id}/edit"
+
+    # Save Assessment
+    try:
+        created_docs["assessment"] = _save_doc(
+            f"{cand_display} - TA/HR Interview Assessment", body.assessmentContent
+        )
+    except Exception as e:
+        errors.append(f"Assessment creation failed: {e}")
+
+    # Save Transcript
+    if body.transcriptContent:
+        try:
+            created_docs["transcript"] = _save_doc(
+                f"{cand_display} - TA/HR Interview Transcript", body.transcriptContent
+            )
+        except Exception as e:
+            errors.append(f"Transcript creation failed: {e}")
+
+    # Save Gemini Notes
+    if body.geminiNotesContent:
+        try:
+            created_docs["geminiNotes"] = _save_doc(
+                f"{cand_display} - TA/HR Gemini Meeting Notes", body.geminiNotesContent
+            )
+        except Exception as e:
+            errors.append(f"Gemini Notes creation failed: {e}")
+
+    return CreateTAHRAssessmentResponse(
+        message="TA/HR Interview Assessment processed successfully",
+        roleId=role_id,
+        roleName=role_display,
+        candidateMatchedName=cand_display,
+        createdDocs=created_docs,
+        errors=errors or None
+    )
+
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
