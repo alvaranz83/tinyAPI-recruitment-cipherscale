@@ -970,6 +970,9 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     # ✅ Always create a fresh subfolder for Screening
     screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Screening")
 
+    # ✅ Always create an extra assessment folder
+    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Assessment")
+
     # ✅ Default polished template
     content = body.content or f"""
         Screening Template – {body.roleName}
@@ -1021,6 +1024,9 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
 
     # ✅ Ensure Screening Templates folder exists (create if missing)
     screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Screening")
+
+    # Create extra technical assessment folder
+    tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Assessment")
 
     # ✅ Check if the candidate's interview doc already exists
     query = (
