@@ -1118,7 +1118,7 @@ def create_scoring(request: Request, body: CreateScoringRequest):
     _, drive, docs = get_clients(subject)
 
     # ✅ Always create a fresh subfolder for Scoring
-    scoring_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Scoring Model")
+    scoring_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Scoring Model")
 
     # ✅ Default polished template
     content = body.content or f"""
@@ -2234,8 +2234,8 @@ def get_tahr_scoring_model(
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Fetch and extract the TA/HR Scoring Model docs for a role.
-    - Locate 'TA/HR Scoring Model' subfolder under the role.
+    Fetch and extract the TA/HR Interview Scoring Model docs for a role.
+    - Locate 'TA/HR Interview Scoring Model' subfolder under the role.
     - Extract full text of all documents inside it.
     """
     require_api_key(request)
@@ -2261,7 +2261,7 @@ def get_tahr_scoring_model(
     # 🔍 Locate "TA/HR Interview Scoring Model" folder
     scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Interview Scoring Model")
     if not scoring_folder:
-        raise HTTPException(404, f"No 'TA/HR Scoring Model' folder found under role {role_display}")
+        raise HTTPException(404, f"No 'TA/HR Interview Scoring Model' folder found under role {role_display}")
 
     # 📂 Get all files in the folder
     files = _scan_stage_files(drive, scoring_folder["id"])
