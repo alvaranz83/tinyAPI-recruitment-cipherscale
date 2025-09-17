@@ -1026,7 +1026,7 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
     _, drive, docs = get_clients(subject)
 
     # ✅ Ensure Screening Templates folder exists (create if missing)
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Screening")
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Template")
 
     # Create extra technical assessment folder
     tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
