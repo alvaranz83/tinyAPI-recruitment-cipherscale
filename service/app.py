@@ -925,7 +925,7 @@ def create_jd(request: Request, body: CreateJDRequest):
     jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Descriptions")
 
     # Create extra CV assessment folder
-    cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CV Assesment")
+    cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assesment")
     
     # ✅ Default polished template
     content = body.content or f"""
@@ -971,10 +971,10 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     _, drive, docs = get_clients(subject)
 
     # ✅ Always create a fresh subfolder for Screening
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Screening")
+    screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Template")
 
     # ✅ Always create an extra assessment folder
-    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Assessment")
+    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interviews Assessment")
 
     # ✅ Default polished template
     content = body.content or f"""
