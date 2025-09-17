@@ -2213,6 +2213,79 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     )
 
 
+class ScoringModelFile(BaseModel):
+    id: str
+    name: str
+    text: Optional[str] = None
+    error: Optional[str] = None
+
+class GetTAHRScoringModelResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    files: List[ScoringModelFile]
+
+
+@app.get("/positions/getTAHRScoringModel", response_model=GetTAHRScoringModelResponse)
+def get_tahr_scoring_model(
+    request: Request,
+    positionId: Optional[str] = Query(None, description="Role folder ID"),
+    roleQuery: Optional[str] = Query(None, description="Role name to fuzzy match if no ID"),
+    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
+):
+    """
+    Fetch and extract the TA/HR Scoring Model docs for a role.
+    - Locate 'TA/HR Scoring Model' subfolder under the role.
+    - Extract full text of all documents inside it.
+    """
+    require_api_key(request)
+    subject = userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve Role
+    role_id = positionId
+    role_display = roleQuery
+    if not role_id:
+        if not roleQuery:
+            raise HTTPException(400, "Must provide either positionId or roleQuery")
+        score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, roleQuery)
+        if not match or score < _ROLE_SCORE_THRESHOLD:
+            raise HTTPException(404, f"Could not resolve role '{roleQuery}' (score={score})")
+        role_id = match["id"]
+        role_display = match["name"]
+
+    # 🔍 Locate "TA/HR Scoring Model" folder
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Scoring Model")
+    if not scoring_folder:
+        raise HTTPException(404, f"No 'TA/HR Scoring Model' folder found under role {role_display}")
+
+    # 📂 Get all files in the folder
+    files = _scan_stage_files(drive, scoring_folder["id"])
+    out_files: List[ScoringModelFile] = []
+
+    for f in files:
+        text, err = (None, None)
+        if _is_doc_or_pdf(f["name"], f["mimeType"]):
+            text, err = _extract_text_from_file(drive, docs, f)
+        out_files.append(ScoringModelFile(
+            id=f["id"],
+            name=f["name"],
+            text=text,
+            error=err
+        ))
+
+    return GetTAHRScoringModelResponse(
+        message=f"Fetched {len(out_files)} scoring model docs for role {role_display}",
+        roleId=role_id,
+        roleName=role_display,
+        files=out_files
+    )
+
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
