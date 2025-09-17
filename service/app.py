@@ -2258,8 +2258,8 @@ def get_tahr_scoring_model(
         role_id = match["id"]
         role_display = match["name"]
 
-    # 🔍 Locate "TA/HR Scoring Model" folder
-    scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Scoring Model")
+    # 🔍 Locate "TA/HR Interview Scoring Model" folder
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Interview Scoring Model")
     if not scoring_folder:
         raise HTTPException(404, f"No 'TA/HR Scoring Model' folder found under role {role_display}")
 
