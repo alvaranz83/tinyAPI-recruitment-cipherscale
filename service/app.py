@@ -922,7 +922,7 @@ def create_jd(request: Request, body: CreateJDRequest):
     _, drive, docs = get_clients(subject)
 
     # ✅ Always create a fresh subfolder for JD
-    jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Descriptions")
+    jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Description")
 
     # Create extra CV assessment folder
     cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assesment")
@@ -974,7 +974,7 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Template")
 
     # ✅ Always create an extra assessment folder
-    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interviews Assessment")
+    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interviews (Assessments)")
 
     # ✅ Default polished template
     content = body.content or f"""
@@ -1029,7 +1029,7 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
     screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Screening")
 
     # Create extra technical assessment folder
-    tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Assessment")
+    tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
 
     # ✅ Check if the candidate's interview doc already exists
     query = (
