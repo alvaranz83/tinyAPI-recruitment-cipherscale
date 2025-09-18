@@ -2116,7 +2116,7 @@ async def upload_cvs(request: Request, body: UploadCVsRequest):
 class CreateTAHRAssessmentRequest(BaseModel):
     positionId: Optional[str] = None   # direct role folder ID if known
     roleQuery: str                     # fuzzy role name if no ID provided
-    candidateName: str                 # candidate name/typo allowed
+    candidateName: str                 # candidate name string (always used for doc naming)
     assessmentContent: str             # ✅ mandatory
     transcriptContent: Optional[str] = None
     geminiNotesContent: Optional[str] = None
@@ -2128,7 +2128,7 @@ class CreateTAHRAssessmentResponse(BaseModel):
     message: str
     roleId: str
     roleName: str
-    candidateMatchedName: str
+    candidateName: str
     createdDocs: Dict[str, str]   # { "assessment": link, "transcript": link, "geminiNotes": link }
     errors: Optional[List[str]] = None
 
@@ -2159,14 +2159,8 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         role_id = match["id"]
         role_display = match["name"]
 
-    # 🔍 Resolve Candidate
-    stages, file_index = _build_candidate_index(drive, role_id)
-    cand_score, cand_match, cand_display = _resolve_best_candidate_file(body.candidateName, file_index)
-    if not cand_match or cand_score < _NAME_SCORE_THRESHOLD:
-        raise HTTPException(404, f"Could not resolve candidate '{body.candidateName}' (score={cand_score})")
-
-    # ✅ Ensure TA/HR Assessment folder exists
-    assessment_folder_id = create_named_subfolder(drive, role_id, "TA/HR Assessment")
+    # ✅ Ensure TA/HR Interviews (Assessments) folder exists under this role
+    assessment_folder_id = create_named_subfolder(drive, role_id, "TA/HR Interviews (Assessments)")
 
     created_docs = {}
     errors = []
@@ -2180,7 +2174,7 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     # Save Assessment
     try:
         created_docs["assessment"] = _save_doc(
-            f"{cand_display} - TA/HR Interview Assessment", body.assessmentContent
+            f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent
         )
     except Exception as e:
         errors.append(f"Assessment creation failed: {e}")
@@ -2189,7 +2183,7 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     if body.transcriptContent:
         try:
             created_docs["transcript"] = _save_doc(
-                f"{cand_display} - TA/HR Interview Transcript", body.transcriptContent
+                f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent
             )
         except Exception as e:
             errors.append(f"Transcript creation failed: {e}")
@@ -2198,7 +2192,7 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     if body.geminiNotesContent:
         try:
             created_docs["geminiNotes"] = _save_doc(
-                f"{cand_display} - TA/HR Gemini Meeting Notes", body.geminiNotesContent
+                f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent
             )
         except Exception as e:
             errors.append(f"Gemini Notes creation failed: {e}")
@@ -2207,10 +2201,11 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         message="TA/HR Interview Assessment processed successfully",
         roleId=role_id,
         roleName=role_display,
-        candidateMatchedName=cand_display,
+        candidateName=body.candidateName,
         createdDocs=created_docs,
         errors=errors or None
     )
+
 
 
 class ScoringModelFile(BaseModel):
