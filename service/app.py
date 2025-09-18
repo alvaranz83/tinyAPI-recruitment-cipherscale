@@ -2285,6 +2285,102 @@ def get_tahr_scoring_model(
         files=out_files
     )
 
+class UploadTranscriptNotesRequest(BaseModel):
+    roleQuery: str                       # fuzzy role name if no positionId
+    candidateName: str
+    assessmentType: str                  # e.g. "TA/HR Interviews (Assessments)" or "1st Technical Interviews (Assessments)"
+    geminiNotes: Optional[str] = None
+    transcript: Optional[str] = None
+    userEmail: Optional[str] = None      # impersonation
+    dryRun: bool = False
+
+class UploadTranscriptNotesResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    candidateName: str
+    assessmentType: str
+    createdDocs: Dict[str, str]   # { "geminiNotes": link, "transcript": link, "codingChallenge": link }
+    errors: Optional[List[str]] = None
+
+
+@app.post("/position/upLoadTranscriptAndNotes", response_model=UploadTranscriptNotesResponse)
+async def upload_transcript_and_notes(
+    request: Request,
+    body: UploadTranscriptNotesRequest = Form(...),
+    codingChallenge: Optional[UploadFile] = File(None),
+):
+    """
+    Upload Gemini Notes + Transcript (and optional Coding Challenge file) into the correct Assessments folder.
+    """
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    if not (body.geminiNotes or body.transcript):
+        raise HTTPException(400, "Must provide at least Gemini Notes or Interview Transcript")
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve role
+    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
+    if not match or score < _ROLE_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
+    role_id = match["id"]
+    role_name = match["name"]
+
+    # 🔍 Resolve Assessment folder
+    assessment_folder = _find_child_folder_by_name(drive, role_id, body.assessmentType)
+    if not assessment_folder:
+        raise HTTPException(404, f"No '{body.assessmentType}' folder found under role {role_name}")
+    assessment_folder_id = assessment_folder["id"]
+
+    created_docs = {}
+    errors = []
+
+    def _save_doc(doc_name: str, content: str, raw: bool = False):
+        if body.dryRun:
+            return f"[DryRun] Would create: {doc_name}"
+        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
+        return f"https://docs.google.com/document/d/{new_id}/edit"
+
+    # ✅ Save Gemini Notes (raw mode)
+    if body.geminiNotes:
+        created_docs["geminiNotes"] = _save_doc(
+            f"{body.candidateName} - Gemini Notes", body.geminiNotes, raw=True
+        )
+
+    # ✅ Save Transcript (raw mode)
+    if body.transcript:
+        created_docs["transcript"] = _save_doc(
+            f"{body.candidateName} - Interview Transcript", body.transcript, raw=True
+        )
+
+    # ✅ Save Coding Challenge (convert file → Google Doc if provided)
+    if codingChallenge:
+        try:
+            if body.dryRun:
+                created_docs["codingChallenge"] = f"[DryRun] Would upload coding challenge {codingChallenge.filename}"
+            else:
+                doc_name = f"{body.candidateName} - Coding Challenge"
+                new_id = _upload_as_google_doc(drive, docs, assessment_folder_id, doc_name, codingChallenge)
+                created_docs["codingChallenge"] = f"https://docs.google.com/document/d/{new_id}/edit"
+        except Exception as e:
+            errors.append(f"Failed to upload coding challenge: {e}")
+
+    return UploadTranscriptNotesResponse(
+        message="Transcript/Notes upload processed successfully",
+        roleId=role_id,
+        roleName=role_name,
+        candidateName=body.candidateName,
+        assessmentType=body.assessmentType,
+        createdDocs=created_docs,
+        errors=errors or None
+    )
+
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
