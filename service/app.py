@@ -2154,10 +2154,9 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     _, drive, docs = get_clients(subject)
 
     # Validate required params
-    if not body.assessmentContent.strip():
-        raise HTTPException(400, "TA/HR Assessment content is required")
     if not (body.transcriptContent or body.geminiNotesContent):
-        raise HTTPException(400, "At least one of transcriptContent or geminiNotesContent must be provided")
+    logger.warning("No transcript or notes provided")
+
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
