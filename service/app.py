@@ -2173,16 +2173,20 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         role_display = match["name"]
 
     # ✅ Ensure TA/HR Interviews (Assessments) folder exists under this role
-    assessment_folder_id = create_named_subfolder(drive, role_id, "TA/HR Interviews (Assessments)")
+    def _get_or_create_assessment_folder(drive, role_id: str, folder_name: str) -> str:
+        # Search for an existing subfolder under the role
+        existing_folders = list_subfolders(drive, role_id)
+        for folder in existing_folders:
+            if folder["name"] == folder_name:
+                return folder["id"]
 
-    created_docs = {}
-    errors = []
+        # If not found, create it
+        return create_named_subfolder(drive, role_id, folder_name)
 
-    def _save_doc(doc_name: str, content: str, raw: bool = False):
-        if body.dryRun:
-            return f"[DryRun] Would create: {doc_name}"
-        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
-        return f"https://docs.google.com/document/d/{new_id}/edit"
+    assessment_folder_id = _get_or_create_assessment_folder(
+        drive, role_id, "TA/HR Interviews (Assessments)"
+    )
+
     
     # Save Assessment (keep formatted mode)
     created_docs["assessment"] = _save_doc(
