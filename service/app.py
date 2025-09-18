@@ -2304,30 +2304,24 @@ class UploadTranscriptNotesResponse(BaseModel):
     errors: Optional[List[str]] = None
 
 
-@app.post("/position/upLoadTranscriptAndNotes", response_model=UploadTranscriptNotesResponse)
+@app.post(
+    "/positions/uploadTranscriptAndNotes",   # fixed plural + consistent casing
+    response_model=UploadTranscriptNotesResponse
+)
 async def upload_transcript_and_notes(
     request: Request,
-    body: Union[UploadTranscriptNotesRequest, None] = Body(None),   # ✅ JSON
-    form: Union[UploadTranscriptNotesRequest, None] = Form(None),   # ✅ multipart form
-    codingChallenge: Optional[UploadFile] = File(None),
+    body: UploadTranscriptNotesRequest = Body(...),   # ✅ only JSON
 ):
     """
-    Upload Gemini Notes + Transcript (and optional Coding Challenge file) into the correct Assessments folder.
-    Accepts both JSON and multipart/form-data.
+    Upload Gemini Notes + Transcript (and optional Coding Challenge link as plain text if needed).
+    Accepts JSON only.
     """
     require_api_key(request)
-    subject = None
-    if body:
-        data = body   # parsed from JSON
-    elif form:
-        data = form   # parsed from form-data
-    else:
-        raise HTTPException(400, "Must provide request body (JSON or multipart form)")
 
-    subject = data.userEmail or _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    if not (data.geminiNotes or data.transcript):
+    if not (body.geminiNotes or body.transcript):
         raise HTTPException(400, "Must provide at least Gemini Notes or Interview Transcript")
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
@@ -2335,60 +2329,49 @@ async def upload_transcript_and_notes(
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
     # 🔍 Resolve role
-    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, data.roleQuery)
+    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
     if not match or score < _ROLE_SCORE_THRESHOLD:
-        raise HTTPException(404, f"Could not resolve role '{data.roleQuery}' (score={score})")
+        raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
     role_id = match["id"]
     role_name = match["name"]
 
     # 🔍 Resolve Assessment folder
-    assessment_folder = _find_child_folder_by_name(drive, role_id, data.assessmentType)
+    assessment_folder = _find_child_folder_by_name(drive, role_id, body.assessmentType)
     if not assessment_folder:
-        raise HTTPException(404, f"No '{data.assessmentType}' folder found under role {role_name}")
+        raise HTTPException(404, f"No '{body.assessmentType}' folder found under role {role_name}")
     assessment_folder_id = assessment_folder["id"]
 
     created_docs = {}
     errors = []
 
     def _save_doc(doc_name: str, content: str, raw: bool = False):
-        if data.dryRun:
+        if body.dryRun:
             return f"[DryRun] Would create: {doc_name}"
         new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
         return f"https://docs.google.com/document/d/{new_id}/edit"
 
     # ✅ Save Gemini Notes
-    if data.geminiNotes:
+    if body.geminiNotes:
         created_docs["geminiNotes"] = _save_doc(
-            f"{data.candidateName} - Gemini Notes", data.geminiNotes, raw=True
+            f"{body.candidateName} - Gemini Notes", body.geminiNotes, raw=True
         )
 
     # ✅ Save Transcript
-    if data.transcript:
+    if body.transcript:
         created_docs["transcript"] = _save_doc(
-            f"{data.candidateName} - Interview Transcript", data.transcript, raw=True
+            f"{body.candidateName} - Interview Transcript", body.transcript, raw=True
         )
-
-    # ✅ Save Coding Challenge
-    if codingChallenge:
-        try:
-            if data.dryRun:
-                created_docs["codingChallenge"] = f"[DryRun] Would upload coding challenge {codingChallenge.filename}"
-            else:
-                doc_name = f"{data.candidateName} - Coding Challenge"
-                new_id = _upload_as_google_doc(drive, docs, assessment_folder_id, doc_name, codingChallenge)
-                created_docs["codingChallenge"] = f"https://docs.google.com/document/d/{new_id}/edit"
-        except Exception as e:
-            errors.append(f"Failed to upload coding challenge: {e}")
 
     return UploadTranscriptNotesResponse(
         message="Transcript/Notes upload processed successfully",
         roleId=role_id,
         roleName=role_name,
-        candidateName=data.candidateName,
-        assessmentType=data.assessmentType,
+        candidateName=body.candidateName,
+        assessmentType=body.assessmentType,
         createdDocs=created_docs,
         errors=errors or None
     )
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
