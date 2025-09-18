@@ -585,7 +585,7 @@ def create_named_subfolder(drive, parent_id: str, subfolder_name: str) -> str:
 
 
 
-def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> str:
+def create_google_doc(docs, drive, folder_id: str, title: str, content: str, raw_mode: bool = False) -> str:
     # 1) Create the Google Doc in the target folder
     file_metadata = {"name": title, "mimeType": "application/vnd.google-apps.document", "parents": [folder_id]}
     file = drive.files().create(body=file_metadata, fields="id", supportsAllDrives=True).execute()
@@ -601,6 +601,20 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str) -> 
         requests.append({
             "deleteContentRange": {"range": {"startIndex": 1, "endIndex": doc_length - 1}}
         })
+    if requests:
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
+    # --- ✅ NEW: raw_mode branch ---
+    if raw_mode:
+        requests = [{
+            "insertText": {
+                "location": {"index": 1},
+                "text": content
+            }
+        }]
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+        return doc_id
+
     
     # Apply the delete (if any), then reset 'requests'
     if requests:
@@ -2165,37 +2179,29 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     created_docs = {}
     errors = []
 
-    def _save_doc(doc_name: str, content: str):
+    def _save_doc(doc_name: str, content: str, raw: bool = False):
         if body.dryRun:
             return f"[DryRun] Would create: {doc_name}"
-        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content)
+        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
         return f"https://docs.google.com/document/d/{new_id}/edit"
-
-    # Save Assessment
-    try:
-        created_docs["assessment"] = _save_doc(
-            f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent
-        )
-    except Exception as e:
-        errors.append(f"Assessment creation failed: {e}")
-
-    # Save Transcript
+    
+    # Save Assessment (keep formatted mode)
+    created_docs["assessment"] = _save_doc(
+        f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent, raw=False
+    )
+    
+    # Save Transcript (force raw mode ✅)
     if body.transcriptContent:
-        try:
-            created_docs["transcript"] = _save_doc(
-                f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent
-            )
-        except Exception as e:
-            errors.append(f"Transcript creation failed: {e}")
-
-    # Save Gemini Notes
+        created_docs["transcript"] = _save_doc(
+            f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent, raw=True
+        )
+    
+    # Save Gemini Notes (force raw mode ✅)
     if body.geminiNotesContent:
-        try:
-            created_docs["geminiNotes"] = _save_doc(
-                f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent
-            )
-        except Exception as e:
-            errors.append(f"Gemini Notes creation failed: {e}")
+        created_docs["geminiNotes"] = _save_doc(
+            f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent, raw=True
+        )
+
 
     return CreateTAHRAssessmentResponse(
         message="TA/HR Interview Assessment processed successfully",
