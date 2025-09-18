@@ -2155,7 +2155,7 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
 
     # Validate required params
     if not (body.transcriptContent or body.geminiNotesContent):
-    logger.warning("No transcript or notes provided")
+        logger.warning("No transcript or notes provided")
 
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
