@@ -2459,7 +2459,6 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
     geminiMeetingNotes=body.geminiMeetingNotes,
     files=out_files
 )
-)
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
