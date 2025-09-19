@@ -2386,6 +2386,80 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
     )
 
 
+class GetFirstTechScoringModelRequest(BaseModel):
+    interviewTranscript: str
+    geminiMeetingNotes: str
+    role: str
+    candidate: str
+    assessmentType: str
+    userEmail: Optional[str] = None
+
+
+class FirstTechScoringModelFile(BaseModel):
+    id: str
+    name: str
+    text: Optional[str] = None
+    error: Optional[str] = None
+
+
+class GetFirstTechScoringModelResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    candidate: str
+    assessmentType: str
+    interviewTranscript: Optional[str] = None
+    geminiMeetingNotes: Optional[str] = None
+    files: List[FirstTechScoringModelFile]
+
+
+
+@app.post("/positions/GetFirstTechnicalInterviewScoringModel", response_model=GetFirstTechScoringModelResponse)
+def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringModelRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve role
+    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.role)
+    if not match or score < _ROLE_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve role '{body.role}' (score={score})")
+    role_id = match["id"]
+    role_display = match["name"]
+
+    # 🔍 Locate scoring folder (fuzzy matching)
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "1st Technical Interview Scoring Model")
+    if not scoring_folder:
+        scoring_folder = _find_child_folder_by_name(drive, role_id, "First Technical Interview Scoring Model")
+    if not scoring_folder:
+        raise HTTPException(404, f"No '1st Technical Interview Scoring Model' folder found for {role_display}")
+
+    # 📂 Get all files inside
+    files = _scan_stage_files(drive, scoring_folder["id"])
+    out_files: List[FirstTechScoringModelFile] = []
+    for f in files:
+        text, err = (None, None)
+        if _is_doc_or_pdf(f["name"], f["mimeType"]):
+            text, err = _extract_text_from_file(drive, docs, f)
+        out_files.append(FirstTechScoringModelFile(
+            id=f["id"], name=f["name"], text=text, error=err
+        ))
+
+    return GetFirstTechScoringModelResponse(
+    message=f"Fetched {len(out_files)} scoring model docs for role {role_display}",
+    roleId=role_id,
+    roleName=role_display,
+    candidate=body.candidate,
+    assessmentType=body.assessmentType,
+    interviewTranscript=body.interviewTranscript,
+    geminiMeetingNotes=body.geminiMeetingNotes,
+    files=out_files
+)
+)
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
