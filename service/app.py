@@ -2293,90 +2293,94 @@ def get_tahr_scoring_model(
         files=out_files
     )
 
-class UploadTranscriptNotesRequest(BaseModel):
-    roleQuery: str                       # fuzzy role name if no positionId
-    candidateName: str
-    assessmentType: str                  # e.g. "TA/HR Interviews (Assessments)" or "1st Technical Interviews (Assessments)"
-    geminiNotes: Optional[str] = None
-    transcript: Optional[str] = None
-    userEmail: Optional[str] = None      # impersonation
+class CreateFirstTechInterviewAssessmentRequest(BaseModel):
+    positionId: Optional[str] = None   # direct role folder ID if known
+    roleQuery: str                     # fuzzy role name if no ID provided
+    candidateName: str                 # candidate name string (always used for doc naming)
+    assessmentContent: str             # ✅ mandatory
+    transcriptContent: Optional[str] = None
+    geminiNotesContent: Optional[str] = None
+    userEmail: Optional[str] = None    # impersonation
     dryRun: bool = False
 
-class UploadTranscriptNotesResponse(BaseModel):
+
+class CreateFirstTechInterviewAssessmentResponse(BaseModel):
     message: str
     roleId: str
     roleName: str
     candidateName: str
-    assessmentType: str
-    createdDocs: Dict[str, str]   # { "geminiNotes": link, "transcript": link, "codingChallenge": link }
+    createdDocs: Dict[str, str]   # { "assessment": link, "transcript": link, "geminiNotes": link }
     errors: Optional[List[str]] = None
 
 
-@app.post(
-    "/positions/uploadTranscriptAndNotes",   # fixed plural + consistent casing
-    response_model=UploadTranscriptNotesResponse
-)
-async def upload_transcript_and_notes(
-    request: Request,
-    body: UploadTranscriptNotesRequest = Body(...),   # ✅ only JSON
-):
-    """
-    Upload Gemini Notes + Transcript (and optional Coding Challenge link as plain text if needed).
-    Accepts JSON only.
-    """
+@app.post("/candidates/createFirstTechnicalInterviewAssessment", response_model=CreateFirstTechInterviewAssessmentResponse)
+def create_first_tech_interview_assessment(request: Request, body: CreateFirstTechInterviewAssessmentRequest):
     require_api_key(request)
-
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    if not (body.geminiNotes or body.transcript):
-        raise HTTPException(400, "Must provide at least Gemini Notes or Interview Transcript")
+    created_docs = {}
+    errors = []
+
+    if not (body.transcriptContent or body.geminiNotesContent or body.assessmentContent):
+        raise HTTPException(400, "Must provide at least assessmentContent, transcriptContent or geminiNotesContent")
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    # 🔍 Resolve role
-    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
-    if not match or score < _ROLE_SCORE_THRESHOLD:
-        raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
-    role_id = match["id"]
-    role_name = match["name"]
+    # 🔍 Resolve Role
+    role_id = body.positionId
+    role_display = body.roleQuery
+    if not role_id:
+        score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
+        if not match or score < _ROLE_SCORE_THRESHOLD:
+            raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
+        role_id = match["id"]
+        role_display = match["name"]
 
-    # 🔍 Resolve Assessment folder
-    assessment_folder = _find_child_folder_by_name(drive, role_id, body.assessmentType)
-    if not assessment_folder:
-        raise HTTPException(404, f"No '{body.assessmentType}' folder found under role {role_name}")
-    assessment_folder_id = assessment_folder["id"]
+    # ✅ Ensure Assessment folder "1st Technical Interviews (Assessments)"
+    def _get_or_create_assessment_folder(drive, role_id: str, folder_name: str) -> str:
+        for folder in _iter_child_folders(drive, role_id):
+            if folder["name"] == folder_name:
+                return folder["id"]
+        return create_named_subfolder(drive, role_id, folder_name)
 
-    created_docs = {}
-    errors = []
+    assessment_folder_id = _get_or_create_assessment_folder(
+        drive, role_id, "1st Technical Interviews (Assessments)"
+    )
 
-    def _save_doc(doc_name: str, content: str, raw: bool = False):
+    def _save_doc(doc_name: str, content: str, raw: bool = False) -> str:
         if body.dryRun:
             return f"[DryRun] Would create: {doc_name}"
-        new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
-        return f"https://docs.google.com/document/d/{new_id}/edit"
+        try:
+            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
+            return f"https://docs.google.com/document/d/{new_id}/edit"
+        except Exception as e:
+            errors.append(f"Failed to create {doc_name}: {e}")
+            return None
 
-    # ✅ Save Gemini Notes
-    if body.geminiNotes:
-        created_docs["geminiNotes"] = _save_doc(
-            f"{body.candidateName} - Gemini Notes", body.geminiNotes, raw=False   # CHANGED
+    # Save docs
+    if body.assessmentContent:
+        created_docs["assessment"] = _save_doc(
+            f"{body.candidateName} - 1st Technical Interview Assessment", body.assessmentContent, raw=False
         )
     
-    # ✅ Save Transcript
-    if body.transcript:
+    if body.transcriptContent:
         created_docs["transcript"] = _save_doc(
-            f"{body.candidateName} - Interview Transcript", body.transcript, raw=False   # CHANGED
+            f"{body.candidateName} - 1st Technical Interview Transcript", body.transcriptContent, raw=False
+        )
+    
+    if body.geminiNotesContent:
+        created_docs["geminiNotes"] = _save_doc(
+            f"{body.candidateName} - 1st Technical Interview Gemini Meeting Notes", body.geminiNotesContent, raw=False
         )
 
-
-    return UploadTranscriptNotesResponse(
-        message="Transcript/Notes upload processed successfully",
+    return CreateFirstTechInterviewAssessmentResponse(
+        message="1st Technical Interview Assessment processed successfully",
         roleId=role_id,
-        roleName=role_name,
+        roleName=role_display,
         candidateName=body.candidateName,
-        assessmentType=body.assessmentType,
         createdDocs=created_docs,
         errors=errors or None
     )
