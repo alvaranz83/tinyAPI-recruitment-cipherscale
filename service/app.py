@@ -2198,14 +2198,17 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     created_docs["assessment"] = _save_doc(
         f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent, raw=False
     )
+    
     if body.transcriptContent:
         created_docs["transcript"] = _save_doc(
-            f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent, raw=True
+            f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent, raw=False   # CHANGED
         )
+    
     if body.geminiNotesContent:
         created_docs["geminiNotes"] = _save_doc(
-            f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent, raw=True
+            f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent, raw=False   # CHANGED
         )
+
 
     return CreateTAHRAssessmentResponse(
         message="TA/HR Interview Assessment processed successfully",
@@ -2358,14 +2361,15 @@ async def upload_transcript_and_notes(
     # ✅ Save Gemini Notes
     if body.geminiNotes:
         created_docs["geminiNotes"] = _save_doc(
-            f"{body.candidateName} - Gemini Notes", body.geminiNotes, raw=True
+            f"{body.candidateName} - Gemini Notes", body.geminiNotes, raw=False   # CHANGED
         )
-
+    
     # ✅ Save Transcript
     if body.transcript:
         created_docs["transcript"] = _save_doc(
-            f"{body.candidateName} - Interview Transcript", body.transcript, raw=True
+            f"{body.candidateName} - Interview Transcript", body.transcript, raw=False   # CHANGED
         )
+
 
     return UploadTranscriptNotesResponse(
         message="Transcript/Notes upload processed successfully",
