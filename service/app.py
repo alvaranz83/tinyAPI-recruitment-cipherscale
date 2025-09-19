@@ -2153,10 +2153,11 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # Validate required params
+    created_docs = {}
+    errors = []
+
     if not (body.transcriptContent or body.geminiNotesContent):
         logger.warning("No transcript or notes provided")
-
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
@@ -2172,39 +2173,39 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         role_id = match["id"]
         role_display = match["name"]
 
-    # ✅ Ensure TA/HR Interviews (Assessments) folder exists under this role
+    # ✅ Ensure Assessment folder
     def _get_or_create_assessment_folder(drive, role_id: str, folder_name: str) -> str:
-        # Search for an existing subfolder under the role
-        existing_folders = list_subfolders(drive, role_id)
-        for folder in existing_folders:
+        for folder in _iter_child_folders(drive, role_id):
             if folder["name"] == folder_name:
                 return folder["id"]
-
-        # If not found, create it
         return create_named_subfolder(drive, role_id, folder_name)
 
     assessment_folder_id = _get_or_create_assessment_folder(
         drive, role_id, "TA/HR Interviews (Assessments)"
     )
 
-    
-    # Save Assessment (keep formatted mode)
+    def _save_doc(doc_name: str, content: str, raw: bool = False) -> str:
+        if body.dryRun:
+            return f"[DryRun] Would create: {doc_name}"
+        try:
+            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
+            return f"https://docs.google.com/document/d/{new_id}/edit"
+        except Exception as e:
+            errors.append(f"Failed to create {doc_name}: {e}")
+            return None
+
+    # Save docs
     created_docs["assessment"] = _save_doc(
         f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent, raw=False
     )
-    
-    # Save Transcript (force raw mode ✅)
     if body.transcriptContent:
         created_docs["transcript"] = _save_doc(
             f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent, raw=True
         )
-    
-    # Save Gemini Notes (force raw mode ✅)
     if body.geminiNotesContent:
         created_docs["geminiNotes"] = _save_doc(
             f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent, raw=True
         )
-
 
     return CreateTAHRAssessmentResponse(
         message="TA/HR Interview Assessment processed successfully",
