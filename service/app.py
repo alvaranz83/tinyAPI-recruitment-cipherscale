@@ -12,9 +12,10 @@ from difflib import SequenceMatcher
 
 
 # ==========================
-# Fuzzy & Parse Helpers. Move canddiates from stage to stage
+# Fuzzy & Parse Helpers.
 # =========================
 
+_STATUS_RE = re.compile(r"\b(open|opened|opening|close|closed|closing)\b", re.IGNORECASE)
 _NAME_SCORE_THRESHOLD = int(os.environ.get("NAME_SCORE_THRESHOLD", "40"))
 _STAGE_SCORE_THRESHOLD = int(os.environ.get("STAGE_SCORE_THRESHOLD", "40"))
 
