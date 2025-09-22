@@ -2510,6 +2510,23 @@ class UpdateRoleStatusRequest(BaseModel):
     userEmail: Optional[str] = None
 
 
+class RoleStatusDecision(BaseModel):
+    roleQuery: str
+    matchedRoleName: Optional[str] = None
+    roleId: Optional[str] = None
+    statusQuery: str
+    resolvedStatus: Optional[str] = None
+    score: int
+    updated: bool
+    error: Optional[str] = None
+
+class UpdateRoleStatusResponse(BaseModel):
+    message: str
+    dryRun: bool
+    decisions: List[RoleStatusDecision]
+
+
+
 @app.post("/roles/updateStatus", response_model=UpdateRoleStatusResponse)
 def update_role_status(request: Request, body: UpdateRoleStatusRequest):
     require_api_key(request)
