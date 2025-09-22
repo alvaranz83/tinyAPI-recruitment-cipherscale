@@ -930,7 +930,7 @@ def create_position(request: Request, body: PositionRequest):
     }
 
 
-@app.get("/positions/list") # End point that understands what department folders already exist under Hiring folder
+@app.get("/positions/list")
 def list_positions(request: Request, department: Optional[str] = None):
     require_api_key(request)
     subject = _extract_subject_from_request(request)
@@ -940,30 +940,70 @@ def list_positions(request: Request, department: Optional[str] = None):
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    # If department specified, check inside it
-    parent_id = DEPARTMENTS_FOLDER_ID
+    FOLDER_MIME = "application/vnd.google-apps.folder"
+
     if department:
+        # If department specified, check inside it
         query = (
-            f"mimeType='application/vnd.google-apps.folder' "
+            f"mimeType='{FOLDER_MIME}' "
             f"and trashed=false and name='{department}' "
             f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
         )
-        results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+        results = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
         items = results.get("files", [])
         if not items:
             return {"roles": [], "department": department, "exists": False}
         parent_id = items[0]["id"]
 
-    # List folders under parent (roles or departments)
-    query = f"mimeType='application/vnd.google-apps.folder' and trashed=false and '{parent_id}' in parents"
-    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
-    roles = [{"id": f["id"], "name": f["name"]} for f in results.get("files", [])]
+        # List roles under department
+        query = f"mimeType='{FOLDER_MIME}' and trashed=false and '{parent_id}' in parents"
+        results = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        roles = [{"id": f["id"], "name": f["name"]} for f in results.get("files", [])]
 
-    return {
-        "department": department or "Hiring",
-        "roles": roles,
-        "exists": True
-    }
+        return {
+            "department": department,
+            "roles": roles,
+            "exists": True
+        }
+
+    else:
+        # No department specified → list all departments AND their roles
+        query = f"mimeType='{FOLDER_MIME}' and trashed=false and '{DEPARTMENTS_FOLDER_ID}' in parents"
+        results = drive.files().list(
+            q=query, fields="files(id,name)",
+            includeItemsFromAllDrives=True, supportsAllDrives=True
+        ).execute()
+        departments = results.get("files", [])
+
+        out = []
+        for dept in departments:
+            dept_id = dept["id"]
+            dept_name = dept["name"]
+
+            # Find roles under each department
+            query = f"mimeType='{FOLDER_MIME}' and trashed=false and '{dept_id}' in parents"
+            roles_results = drive.files().list(
+                q=query, fields="files(id,name)",
+                includeItemsFromAllDrives=True, supportsAllDrives=True
+            ).execute()
+            roles = [{"id": f["id"], "name": f["name"]} for f in roles_results.get("files", [])]
+
+            out.append({
+                "department": dept_name,
+                "roles": roles
+            })
+
+        return {
+            "message": "Departments and their roles listed successfully",
+            "departments": out,
+            "exists": True
+        }
 
 
 
