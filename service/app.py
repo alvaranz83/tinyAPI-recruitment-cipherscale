@@ -12,7 +12,7 @@ from difflib import SequenceMatcher
 
 
 # ==========================
-# Fuzzy & Parse Helpers.
+# Fuzzy & Parse Helpers..
 # =========================
 
 _STATUS_RE = re.compile(r"\b(open|opened|opening|close|closed|closing)\b", re.IGNORECASE)
