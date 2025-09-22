@@ -42,6 +42,49 @@ def _token_set_ratio(a: str, b: str) -> int:
     sm = int(SequenceMatcher(None, _norm(a), _norm(b)).ratio() * 100)
     return int((score * 0.6) + (sm * 0.4))
 
+def _parse_status_prompt(prompt: str, drive, departments_root_id: str) -> list[dict]:
+    prompt = prompt.strip()
+    out: list[dict] = []
+
+    # Handle "all roles" case
+    if re.search(r"\ball\b.*\broles?\b", prompt, re.IGNORECASE):
+        status_match = _STATUS_RE.search(prompt)
+        if status_match:
+            status = status_match.group(1)
+            all_roles = _list_all_roles(drive, departments_root_id)
+            role_names = [r["name"] for r in all_roles]
+            out.append({"roleQueries": role_names, "statusQuery": status})
+        return out
+
+    # Normal case: split by status keywords
+    parts = _STATUS_RE.split(prompt)
+    if len(parts) < 2:
+        return []
+
+    it = iter(parts)
+    _ = next(it)  # skip prefix
+    for status, roles_chunk in zip(it, it):
+        role_text = roles_chunk.strip(" ,.")
+        if not role_text:
+            continue
+        role_list = [r for r in _AND_SPLIT_RE.split(role_text) if r]
+        out.append({
+            "roleQueries": role_list,
+            "statusQuery": status
+        })
+
+    return out
+
+
+def _normalize_status(s: str) -> Optional[str]:
+    s = (s or "").strip().lower()
+    if s in ["open", "opened", "opening"]:
+        return "open"
+    if s in ["close", "closed", "closing"]:
+        return "close"
+    return None
+
+
 def _best_match(query: str, candidates: Iterable[Tuple[str, Any]]) -> Tuple[int, Any | None, str | None]:
     """
     candidates: iterable of (display_name, payload)
@@ -2459,6 +2502,83 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
     geminiMeetingNotes=body.geminiMeetingNotes,
     files=out_files
 )
+
+
+class UpdateRoleStatusRequest(BaseModel):
+    prompt: str = Field(..., description="Free text like 'Close role1, role2' or 'Mark all roles as open'")
+    dryRun: bool = False
+    userEmail: Optional[str] = None
+
+
+@app.post("/roles/updateStatus", response_model=UpdateRoleStatusResponse)
+def update_role_status(request: Request, body: UpdateRoleStatusRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    groups = _parse_status_prompt(body.prompt, drive, DEPARTMENTS_FOLDER_ID)
+    if not groups:
+        raise HTTPException(400, "Could not parse any 'role → status' groups from the prompt")
+
+    # Reuse fuzzy matching + update logic
+    decisions: List[RoleStatusDecision] = []
+    for grp in groups:
+        resolved_status = _normalize_status(grp["statusQuery"])
+        if not resolved_status:
+            for rq in grp["roleQueries"]:
+                decisions.append(RoleStatusDecision(
+                    roleQuery=rq,
+                    statusQuery=grp["statusQuery"],
+                    resolvedStatus=None,
+                    score=0,
+                    updated=False,
+                    error=f"Unrecognized status '{grp['statusQuery']}'"
+                ))
+            continue
+
+        for rq in grp["roleQueries"]:
+            score, match, display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, rq)
+            decision = RoleStatusDecision(
+                roleQuery=rq,
+                matchedRoleName=display if match else None,
+                roleId=match["id"] if match else None,
+                statusQuery=grp["statusQuery"],
+                resolvedStatus=resolved_status,
+                score=score,
+                updated=False,
+                error=None
+            )
+
+            if not match:
+                decision.error = "No role matched"
+            elif score < _ROLE_SCORE_THRESHOLD:
+                decision.error = f"Low match score ({score}<{_ROLE_SCORE_THRESHOLD})"
+            else:
+                if not body.dryRun:
+                    try:
+                        drive.files().update(
+                            fileId=match["id"],
+                            body={"properties": {"roleStatus": resolved_status}},
+                            fields="id,properties",
+                            supportsAllDrives=True
+                        ).execute()
+                        decision.updated = True
+                    except Exception as e:
+                        decision.error = f"Update failed: {e}"
+                else:
+                    decision.updated = False
+            decisions.append(decision)
+
+    return UpdateRoleStatusResponse(
+        message="Processed role status updates",
+        dryRun=body.dryRun,
+        decisions=decisions
+    )
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
