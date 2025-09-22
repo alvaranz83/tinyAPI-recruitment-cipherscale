@@ -929,7 +929,6 @@ def create_position(request: Request, body: PositionRequest):
         "created": True
     }
 
-
 @app.get("/positions/list")
 def list_positions(request: Request, department: Optional[str] = None):
     require_api_key(request)
@@ -958,13 +957,20 @@ def list_positions(request: Request, department: Optional[str] = None):
             return {"roles": [], "department": department, "exists": False}
         parent_id = items[0]["id"]
 
-        # List roles under department
+        # List roles under department (request properties too)
         query = f"mimeType='{FOLDER_MIME}' and trashed=false and '{parent_id}' in parents"
         results = drive.files().list(
-            q=query, fields="files(id,name)",
+            q=query, fields="files(id,name,properties)",
             includeItemsFromAllDrives=True, supportsAllDrives=True
         ).execute()
-        roles = [{"id": f["id"], "name": f["name"]} for f in results.get("files", [])]
+        roles = [
+            {
+                "id": f["id"],
+                "name": f["name"],
+                "roleStatus": f.get("properties", {}).get("roleStatus")
+            }
+            for f in results.get("files", [])
+        ]
 
         return {
             "department": department,
@@ -986,13 +992,20 @@ def list_positions(request: Request, department: Optional[str] = None):
             dept_id = dept["id"]
             dept_name = dept["name"]
 
-            # Find roles under each department
+            # Find roles under each department (request properties too)
             query = f"mimeType='{FOLDER_MIME}' and trashed=false and '{dept_id}' in parents"
             roles_results = drive.files().list(
-                q=query, fields="files(id,name)",
+                q=query, fields="files(id,name,properties)",
                 includeItemsFromAllDrives=True, supportsAllDrives=True
             ).execute()
-            roles = [{"id": f["id"], "name": f["name"]} for f in roles_results.get("files", [])]
+            roles = [
+                {
+                    "id": f["id"],
+                    "name": f["name"],
+                    "roleStatus": f.get("properties", {}).get("roleStatus")
+                }
+                for f in roles_results.get("files", [])
+            ]
 
             out.append({
                 "department": dept_name,
@@ -1004,7 +1017,6 @@ def list_positions(request: Request, department: Optional[str] = None):
             "departments": out,
             "exists": True
         }
-
 
 
 class CreateJDRequest(BaseModel):
