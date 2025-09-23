@@ -11,13 +11,6 @@ from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 
 
-### Test for document upload using multipart
-
-FOLDER_ID = "0AI4FSKxyd-6pUk9PVA"
-
-### End 
-
-
 # ==========================
 # Fuzzy & Parse Helpers..
 # =========================
@@ -2655,51 +2648,6 @@ def update_role_status(request: Request, body: UpdateRoleStatusRequest):
         dryRun=body.dryRun,
         decisions=decisions
     )
-
-### test for doument upload 
-
-@app.post("/document/upload")
-async def upload_document(
-    request: Request,
-    file: UploadFile = File(...),
-    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
-):
-    """
-    Upload a document (PDF/DOCX/etc.) into the fixed folder using multipart upload.
-    """
-    require_api_key(request)
-    subject = userEmail or _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
-
-    try:
-        # Prepare file stream for upload
-        file_bytes = io.BytesIO(await file.read())
-        media = MediaIoBaseUpload(file_bytes, mimetype=file.content_type, resumable=False)
-
-        # Metadata (parents ensures it goes into target folder)
-        metadata = {
-            "name": file.filename,
-            "parents": [FOLDER_ID],
-        }
-
-        created = drive.files().create(
-            body=metadata,
-            media_body=media,
-            fields="id, name, webViewLink",
-            supportsAllDrives=True
-        ).execute()
-
-        return {
-            "message": f"Uploaded {file.filename} successfully",
-            "fileId": created["id"],
-            "fileName": created["name"],
-            "link": created.get("webViewLink"),
-        }
-
-    except Exception as e:
-        raise HTTPException(500, f"Failed to upload document: {e}")
-
-
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
