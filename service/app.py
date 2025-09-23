@@ -2228,8 +2228,6 @@ class CreateTAHRAssessmentRequest(BaseModel):
     roleQuery: str                     # fuzzy role name if no ID provided
     candidateName: str                 # candidate name string (always used for doc naming)
     assessmentContent: str             # ✅ mandatory
-    transcriptContent: Optional[str] = None
-    geminiNotesContent: Optional[str] = None
     userEmail: Optional[str] = None    # impersonation
     dryRun: bool = False
 
@@ -2251,9 +2249,6 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
 
     created_docs = {}
     errors = []
-
-    if not (body.transcriptContent or body.geminiNotesContent):
-        logger.warning("No transcript or notes provided")
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
@@ -2280,34 +2275,23 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         drive, role_id, "TA/HR Interviews (Assessments)"
     )
 
-    def _save_doc(doc_name: str, content: str, raw: bool = False) -> str:
+    def _save_doc(doc_name: str, content: str) -> str:
         if body.dryRun:
             return f"[DryRun] Would create: {doc_name}"
         try:
-            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
+            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content)
             return f"https://docs.google.com/document/d/{new_id}/edit"
         except Exception as e:
             errors.append(f"Failed to create {doc_name}: {e}")
             return None
 
-    # Save docs
+    # ✅ Save only assessment
     created_docs["assessment"] = _save_doc(
-        f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent, raw=False
+        f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent
     )
-    
-    if body.transcriptContent:
-        created_docs["transcript"] = _save_doc(
-            f"{body.candidateName} - TA/HR Interview Transcript", body.transcriptContent, raw=False   # CHANGED
-        )
-    
-    if body.geminiNotesContent:
-        created_docs["geminiNotes"] = _save_doc(
-            f"{body.candidateName} - TA/HR Gemini Meeting Notes", body.geminiNotesContent, raw=False   # CHANGED
-        )
-
 
     return CreateTAHRAssessmentResponse(
-        message="TA/HR Interview Assessment processed successfully",
+        message="TA/HR Interview Assessment saved successfully",
         roleId=role_id,
         roleName=role_display,
         candidateName=body.candidateName,
@@ -2394,8 +2378,6 @@ class CreateFirstTechInterviewAssessmentRequest(BaseModel):
     roleQuery: str                     # fuzzy role name if no ID provided
     candidateName: str                 # candidate name string (always used for doc naming)
     assessmentContent: str             # ✅ mandatory
-    transcriptContent: Optional[str] = None
-    geminiNotesContent: Optional[str] = None
     userEmail: Optional[str] = None    # impersonation
     dryRun: bool = False
 
@@ -2418,8 +2400,8 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
     created_docs = {}
     errors = []
 
-    if not (body.transcriptContent or body.geminiNotesContent or body.assessmentContent):
-        raise HTTPException(400, "Must provide at least assessmentContent, transcriptContent or geminiNotesContent")
+    if not body.assessmentContent:
+        raise HTTPException(400, "Must provide assessmentContent")
 
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
@@ -2435,7 +2417,7 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
         role_id = match["id"]
         role_display = match["name"]
 
-    # ✅ Ensure Assessment folder "1st Technical Interviews (Assessments)"
+    # ✅ Ensure Assessment folder
     def _get_or_create_assessment_folder(drive, role_id: str, folder_name: str) -> str:
         for folder in _iter_child_folders(drive, role_id):
             if folder["name"] == folder_name:
@@ -2446,40 +2428,30 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
         drive, role_id, "1st Technical Interviews (Assessments)"
     )
 
-    def _save_doc(doc_name: str, content: str, raw: bool = False) -> str:
+    def _save_doc(doc_name: str, content: str) -> str:
         if body.dryRun:
             return f"[DryRun] Would create: {doc_name}"
         try:
-            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content, raw_mode=raw)
+            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content)
             return f"https://docs.google.com/document/d/{new_id}/edit"
         except Exception as e:
             errors.append(f"Failed to create {doc_name}: {e}")
             return None
 
-    # Save docs
-    if body.assessmentContent:
-        created_docs["assessment"] = _save_doc(
-            f"{body.candidateName} - 1st Technical Interview Assessment", body.assessmentContent, raw=False
-        )
-    
-    if body.transcriptContent:
-        created_docs["transcript"] = _save_doc(
-            f"{body.candidateName} - 1st Technical Interview Transcript", body.transcriptContent, raw=False
-        )
-    
-    if body.geminiNotesContent:
-        created_docs["geminiNotes"] = _save_doc(
-            f"{body.candidateName} - 1st Technical Interview Gemini Meeting Notes", body.geminiNotesContent, raw=False
-        )
+    # ✅ Save only assessment
+    created_docs["assessment"] = _save_doc(
+        f"{body.candidateName} - 1st Technical Interview Assessment", body.assessmentContent
+    )
 
     return CreateFirstTechInterviewAssessmentResponse(
-        message="1st Technical Interview Assessment processed successfully",
+        message="1st Technical Interview Assessment saved successfully",
         roleId=role_id,
         roleName=role_display,
         candidateName=body.candidateName,
         createdDocs=created_docs,
         errors=errors or None
     )
+
 
 
 class GetFirstTechScoringModelRequest(BaseModel):
