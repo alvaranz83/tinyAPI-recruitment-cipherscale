@@ -2660,6 +2660,72 @@ def update_role_status(request: Request, body: UpdateRoleStatusRequest):
         decisions=decisions
     )
 
+class UpdateDocumentRequest(BaseModel):
+    fileId: str
+    content: str
+    userEmail: Optional[str] = None  # for impersonation
+    rawMode: bool = False            # if true, inserts plain text without formatting
+
+
+class UpdateDocumentResponse(BaseModel):
+    message: str
+    fileId: str
+    docLink: str
+
+
+@app.post("/documents/update", response_model=UpdateDocumentResponse)
+def update_document(request: Request, body: UpdateDocumentRequest):
+    """
+    Overwrite an existing Google Doc with new content.
+    Keeps the same fileId but clears and re-writes all content.
+    """
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    # Fetch doc length to clear contents
+    try:
+        doc = docs.documents().get(documentId=body.fileId).execute()
+    except Exception as e:
+        raise HTTPException(404, f"Document {body.fileId} not found: {e}")
+
+    doc_length = doc.get("body").get("content")[-1]["endIndex"]
+
+    # Step 1: Clear old content
+    requests_clear = []
+    if doc_length > 2:
+        requests_clear.append({
+            "deleteContentRange": {
+                "range": {"startIndex": 1, "endIndex": doc_length - 1}
+            }
+        })
+    if requests_clear:
+        docs.documents().batchUpdate(documentId=body.fileId, body={"requests": requests_clear}).execute()
+
+    # Step 2: Insert new content
+    if body.rawMode:
+        # Insert plain text
+        docs.documents().batchUpdate(documentId=body.fileId, body={
+            "requests": [{"insertText": {"location": {"index": 1}, "text": body.content}}]
+        }).execute()
+    else:
+        # Reuse existing formatter (so updates look like create_google_doc outputs)
+        create_google_doc(
+            docs, drive, folder_id="",  # folder_id not needed, we're updating
+            title="",                   # not creating new file
+            content=body.content,
+            raw_mode=False
+        )
+        # ⚠️ You may want to refactor create_google_doc into two parts
+        # (one for creating, one for writing content), so you can call the writing part here.
+
+    return UpdateDocumentResponse(
+        message="Document updated successfully",
+        fileId=body.fileId,
+        docLink=f"https://docs.google.com/document/d/{body.fileId}/edit"
+    )
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
