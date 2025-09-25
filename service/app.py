@@ -2479,7 +2479,7 @@ def get_first_tech_interview_template(request: Request, body: GetFirstTechTempla
         text, err = (None, None)
         if _is_doc_or_pdf(f["name"], f["mimeType"]):
             text, err = _extract_text_from_file(drive, docs, f)
-        out_files.append(FirstTechScoringModelFile(
+        out_files.append(TemplateFile(
             id=f["id"], name=f["name"], text=text, error=err
         ))
 
