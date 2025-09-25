@@ -2620,6 +2620,7 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
 )
 
 
+
 class UpdateRoleStatusRequest(BaseModel):
     prompt: str = Field(..., description="Free text like 'Close role1, role2' or 'Mark all roles as open'")
     dryRun: bool = False
