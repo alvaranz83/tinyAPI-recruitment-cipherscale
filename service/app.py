@@ -1858,7 +1858,7 @@ def get_file_text(
     _, drive, docs = get_clients(subject)
 
     try:
-        f = drive.files().get(fileId=fileId, fields="id,name,mimeType").execute()
+        f = drive.files().get(fileId=fileId, fields="id,name,mimeType", supportsAllDrives=True).execute()
     except Exception as e:
         raise HTTPException(404, f"File '{fileId}' not found: {e}")
 
