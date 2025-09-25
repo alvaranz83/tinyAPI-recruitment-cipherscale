@@ -2801,8 +2801,18 @@ async def slack_events(request: Request):
             user_prompt = event.get("text")
             channel_id = event.get("channel")
 
-            # Send prompt to GPT Agent (your logic here)
-            response_text = await process_with_gpt(user_prompt)
+            # Send prompt to GPT Agent (OpenAI API directly)
+            response_text = await openai_client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {"role": "system", "content": "You are the Cipherscale HR/Recruitment Ops Agent."},
+                    {"role": "user", "content": user_prompt},
+                ],
+                extra_headers={"OpenAI-Beta": "assistants=v2"},
+                extra_body={"assistant_id": "g-689617d9e69081919e5f7e75eefcbfa9-cipherscale-hr-recruitment-ops-agent"}
+            )
+            response_text = response_text.choices[0].message.content.strip()
+
 
             # Send response back to Slack
             async with httpx.AsyncClient() as client:
