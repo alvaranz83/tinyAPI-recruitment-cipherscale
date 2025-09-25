@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
-import os, json, textwrap, re, uuid, logging, io
+import os, json, textwrap, re, uuid, logging, io, httpx
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload 
@@ -10,6 +10,9 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 
+
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 
 # ==========================
 # Fuzzy & Parse Helpers..
@@ -207,6 +210,39 @@ def _build_candidate_index(drive, role_id: str) -> tuple[list[dict], dict]:
 
 def _list_roles_under_department(drive, dept_folder_id: str) -> list[dict]:
     return [{"id": r["id"], "name": r.get("name", "")} for r in _iter_child_folders(drive, dept_folder_id)]
+
+
+
+##### Requests from Slacks to process with GPT
+
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    data = await request.json()
+
+    # Slack verification (challenge event during setup)
+    if "challenge" in data:
+        return {"challenge": data["challenge"]}
+
+    # Process only real messages (not bot messages)
+    if "event" in data:
+        event = data["event"]
+        if event.get("type") == "message" and not event.get("bot_id"):
+            user_prompt = event.get("text")
+            channel_id = event.get("channel")
+
+            # Send prompt to GPT Agent (your logic here)
+            response_text = await process_with_gpt(user_prompt)
+
+            # Send response back to Slack
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    SLACK_API_URL,
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                    json={"channel": channel_id, "text": response_text}
+                )
+
+    return {"ok": True}
+
 
 
 # =========================
@@ -2740,6 +2776,34 @@ def update_document(request: Request, body: UpdateDocumentRequest):
         fileId=body.fileId,
         docLink=f"https://docs.google.com/document/d/{body.fileId}/edit"
     )
+
+@app.post("/slack/events")
+async def slack_events(request: Request):
+    data = await request.json()
+
+    # Slack verification (challenge event during setup)
+    if "challenge" in data:
+        return {"challenge": data["challenge"]}
+
+    # Process only real messages (not bot messages)
+    if "event" in data:
+        event = data["event"]
+        if event.get("type") == "message" and not event.get("bot_id"):
+            user_prompt = event.get("text")
+            channel_id = event.get("channel")
+
+            # Send prompt to GPT Agent (your logic here)
+            response_text = await process_with_gpt(user_prompt)
+
+            # Send response back to Slack
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    SLACK_API_URL,
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                    json={"channel": channel_id, "text": response_text}
+                )
+
+    return {"ok": True}
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
