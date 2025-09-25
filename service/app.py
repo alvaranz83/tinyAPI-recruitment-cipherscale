@@ -1079,11 +1079,19 @@ def create_screening(request: Request, body: CreateScreeningRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # ✅ Always create a fresh subfolder for Screening
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Template")
+    # ✅ Ensure TA/HR Interview Template folder exists
+    screening_folder = _find_child_folder_by_name(drive, body.positionId, "TA/HR Interview Template")
+    if screening_folder:
+        screening_folder_id = screening_folder["id"]
+    else:
+        screening_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interview Template")
 
-    # ✅ Always create an extra assessment folder
-    assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interviews (Assessments)")
+    # ✅ Ensure TA/HR Interviews (Assessments) folder exists
+    assessment_folder = _find_child_folder_by_name(drive, body.positionId, "TA/HR Interviews (Assessments)")
+    if assessment_folder:
+        assessment_folder_id = assessment_folder["id"]
+    else:
+        assessment_folder_id = create_named_subfolder(drive, body.positionId, "TA/HR Interviews (Assessments)")
 
     # ✅ Default polished template
     content = body.content or f"""
@@ -1134,11 +1142,19 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # ✅ Ensure Screening Templates folder exists (create if missing)
-    screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Template")
+    # ✅ Ensure 1st Technical Interview Template folder exists
+    screening_folder = _find_child_folder_by_name(drive, body.positionId, "1st Technical Interview Template")
+    if screening_folder:
+        screening_folder_id = screening_folder["id"]
+    else:
+        screening_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interview Template")
 
-    # Create extra technical assessment folder
-    tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
+    # ✅ Ensure 1st Technical Interviews (Assessments) folder exists
+    tech_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "1st Technical Interviews (Assessments)")
+    if tech_assessment_folder:
+        tech_assessment_folder_id = tech_assessment_folder["id"]
+    else:
+        tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
 
     # ✅ Check if the candidate's interview doc already exists
     query = (
