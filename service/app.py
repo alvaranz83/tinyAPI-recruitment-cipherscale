@@ -18,7 +18,7 @@ from difflib import SequenceMatcher
 _STATUS_RE = re.compile(r"\b(open|opened|opening|close|closed|closing)\b", re.IGNORECASE)
 _NAME_SCORE_THRESHOLD = int(os.environ.get("NAME_SCORE_THRESHOLD", "40"))
 _STAGE_SCORE_THRESHOLD = int(os.environ.get("STAGE_SCORE_THRESHOLD", "40"))
-_ROLE_SCORE_THRESHOLD = int(os.environ.get("ROLE_SCORE_THRESHOLD", "30"))
+_ROLE_SCORE_THRESHOLD = int(os.environ.get("ROLE_SCORE_THRESHOLD", "20"))
 _FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
 _AND_SPLIT_RE = re.compile(r"\s*(?:,| and )\s*", re.IGNORECASE)
