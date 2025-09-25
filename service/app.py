@@ -268,22 +268,6 @@ def _list_roles_under_department(drive, dept_folder_id: str) -> list[dict]:
     return [{"id": r["id"], "name": r.get("name", "")} for r in _iter_child_folders(drive, dept_folder_id)]
 
 
-
-# Helper for requests coming from Slacks to process with GPT
-
-async def process_with_gpt(prompt: str) -> str:
-    """
-    This is where you connect to your GPT Agent.
-    That agent can then decide which FastAPI HR/recruitment endpoint to call,
-    and return the formatted result.
-    """
-    # Example: Call your GPT Agent service
-    async with httpx.AsyncClient() as client:
-        resp = await client.post("http://localhost:8001/agent", json={"prompt": prompt})
-        return resp.json().get("result", "Something went wrong.")
-
-
-
 # =========================
 # Resolution & Move Engine
 # =========================
