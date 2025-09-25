@@ -2267,21 +2267,21 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
 
 
 
-class ScoringModelFile(BaseModel):
+class TemplateFile(BaseModel):
     id: str
     name: str
     text: Optional[str] = None
     error: Optional[str] = None
 
-class GetTAHRScoringModelResponse(BaseModel):
+class GetTAHRTemplateResponse(BaseModel):
     message: str
     roleId: str
     roleName: str
-    files: List[ScoringModelFile]
+    files: List[TemplateFile]
 
 
-@app.get("/positions/getTAHRScoringModel", response_model=GetTAHRScoringModelResponse)
-def get_tahr_scoring_model(
+@app.get("/positions/getTAHRInterviewTemplate", response_model=GetTAHRTemplateResponse)
+def get_tahr_interview_template(
     request: Request,
     positionId: Optional[str] = Query(None, description="Role folder ID"),
     roleQuery: Optional[str] = Query(None, description="Role name to fuzzy match if no ID"),
@@ -2319,20 +2319,20 @@ def get_tahr_scoring_model(
 
     # 📂 Get all files in the folder
     files = _scan_stage_files(drive, scoring_folder["id"])
-    out_files: List[ScoringModelFile] = []
+    out_files: List[TemplateFile] = []
 
     for f in files:
         text, err = (None, None)
         if _is_doc_or_pdf(f["name"], f["mimeType"]):
             text, err = _extract_text_from_file(drive, docs, f)
-        out_files.append(ScoringModelFile(
+        out_files.append(TemplateFile(
             id=f["id"],
             name=f["name"],
             text=text,
             error=err
         ))
 
-    return GetTAHRScoringModelResponse(
+    return GetTAHRTemplateResponse(
         message=f"Fetched {len(out_files)} scoring model docs for role {role_display}",
         roleId=role_id,
         roleName=role_display,
@@ -2420,7 +2420,7 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
 
 
 
-class GetFirstTechScoringModelRequest(BaseModel):
+class GetFirstTechTemplateRequest(BaseModel):
     interviewTranscript: str
     geminiMeetingNotes: str
     role: str
@@ -2429,14 +2429,14 @@ class GetFirstTechScoringModelRequest(BaseModel):
     userEmail: Optional[str] = None
 
 
-class FirstTechScoringModelFile(BaseModel):
+class TemplateFile(BaseModel):
     id: str
     name: str
     text: Optional[str] = None
     error: Optional[str] = None
 
 
-class GetFirstTechScoringModelResponse(BaseModel):
+class GetFirstTechTemplateResponse(BaseModel):
     message: str
     roleId: str
     roleName: str
@@ -2444,12 +2444,12 @@ class GetFirstTechScoringModelResponse(BaseModel):
     assessmentType: str
     interviewTranscript: Optional[str] = None
     geminiMeetingNotes: Optional[str] = None
-    files: List[FirstTechScoringModelFile]
+    files: List[TemplateFile]
 
 
 
-@app.post("/positions/GetFirstTechnicalInterviewScoringModel", response_model=GetFirstTechScoringModelResponse)
-def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringModelRequest):
+@app.post("/positions/GetFirstTechnicalInterviewTemplate", response_model=GetFirstTechTemplateResponse)
+def get_first_tech_interview_template(request: Request, body: GetFirstTechTemplateRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
@@ -2474,7 +2474,7 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
 
     # 📂 Get all files inside
     files = _scan_stage_files(drive, scoring_folder["id"])
-    out_files: List[FirstTechScoringModelFile] = []
+    out_files: List[TemplateFile] = []
     for f in files:
         text, err = (None, None)
         if _is_doc_or_pdf(f["name"], f["mimeType"]):
@@ -2483,7 +2483,7 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
             id=f["id"], name=f["name"], text=text, error=err
         ))
 
-    return GetFirstTechScoringModelResponse(
+    return GetFirstTechTemplateResponse(
     message=f"Fetched {len(out_files)} scoring model docs for role {role_display}",
     roleId=role_id,
     roleName=role_display,
