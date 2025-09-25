@@ -43,19 +43,43 @@ _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
 ## Helper to use OpenAI API to talk to agent from external services
 async def process_with_gpt(prompt: str) -> str:
     """
-    Call GPT-5 with HR/Recruitment Ops system prompt.
+    Call the custom Cipherscale HR/Recruitment Ops Agent via Assistants API.
     """
     try:
-        resp = await openai_client.chat.completions.create(
-            model="gpt-5",
-            messages=[
-                {"role": "system", "content": "You are the Cipherscale HR/Recruitment Ops Agent."},
-                {"role": "user", "content": prompt},
-            ]
+        # 1. Create a new thread
+        thread = await openai_client.beta.threads.create()
+
+        # 2. Add the user message
+        await openai_client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=prompt
         )
-        return resp.choices[0].message.content.strip()
+
+        # 3. Run the assistant. Custom GPT ID
+        run = await openai_client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=os.environ["ASSISTANT_ID"]  # put your assistant_id in env
+        )
+
+        # 4. Poll until run completes
+        while True:
+            run_status = await openai_client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+            if run_status.status in ["completed", "failed", "cancelled"]:
+                break
+            await asyncio.sleep(1)
+
+        # 5. Fetch the last message
+        messages = await openai_client.beta.threads.messages.list(thread_id=thread.id)
+        last = messages.data[0]
+        return last.content[0].text.value if last.content else "No response."
+
     except Exception as e:
-        return f"❌ Error calling GPT Agent: {str(e)}"
+        return f"❌ Error calling custom GPT Agent: {str(e)}"
+
 
 ## end
 
@@ -2786,34 +2810,25 @@ def update_document(request: Request, body: UpdateDocumentRequest):
 async def slack_events(request: Request):
     data = await request.json()
 
-    # Slack verification (challenge event during setup)
     if "challenge" in data:
         return {"challenge": data["challenge"]}
 
-    # Process only real messages (not bot messages)
     if "event" in data:
         event = data["event"]
         if event.get("type") == "message" and not event.get("bot_id"):
             user_prompt = event.get("text")
             channel_id = event.get("channel")
 
-            # Send prompt to GPT Agent (OpenAI API directly)
-            resp = await openai_client.chat.completions.create(
-                model="gpt-5",
-                messages=[
-                    {"role": "system", "content": "You are the Cipherscale HR/Recruitment Ops Agent."},
-                    {"role": "user", "content": user_prompt},
-                ]
-            )
-            response_text = resp.choices[0].message.content.strip()
+            response_text = await process_with_gpt(user_prompt)
 
-            # Send response back to Slack
             async with httpx.AsyncClient() as client:
                 await client.post(
                     SLACK_API_URL,
                     headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
                     json={"channel": channel_id, "text": response_text}
                 )
+
+    return {"ok": True}
 
     return {"ok": True}
 
