@@ -10,6 +10,7 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 
+app = FastAPI()
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_API_URL = "https://slack.com/api/chat.postMessage"
