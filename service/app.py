@@ -222,35 +222,18 @@ def _list_roles_under_department(drive, dept_folder_id: str) -> list[dict]:
 
 
 
-##### Requests from Slacks to process with GPT
+# Helper for requests coming from Slacks to process with GPT
 
-@app.post("/slack/events")
-async def slack_events(request: Request):
-    data = await request.json()
-
-    # Slack verification (challenge event during setup)
-    if "challenge" in data:
-        return {"challenge": data["challenge"]}
-
-    # Process only real messages (not bot messages)
-    if "event" in data:
-        event = data["event"]
-        if event.get("type") == "message" and not event.get("bot_id"):
-            user_prompt = event.get("text")
-            channel_id = event.get("channel")
-
-            # Send prompt to GPT Agent (your logic here)
-            response_text = await process_with_gpt(user_prompt)
-
-            # Send response back to Slack
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    SLACK_API_URL,
-                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                    json={"channel": channel_id, "text": response_text}
-                )
-
-    return {"ok": True}
+async def process_with_gpt(prompt: str) -> str:
+    """
+    This is where you connect to your GPT Agent.
+    That agent can then decide which FastAPI HR/recruitment endpoint to call,
+    and return the formatted result.
+    """
+    # Example: Call your GPT Agent service
+    async with httpx.AsyncClient() as client:
+        resp = await client.post("http://localhost:8001/agent", json={"prompt": prompt})
+        return resp.json().get("result", "Something went wrong.")
 
 
 
