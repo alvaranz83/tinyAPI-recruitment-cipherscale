@@ -18,6 +18,8 @@ from difflib import SequenceMatcher
 _STATUS_RE = re.compile(r"\b(open|opened|opening|close|closed|closing)\b", re.IGNORECASE)
 _NAME_SCORE_THRESHOLD = int(os.environ.get("NAME_SCORE_THRESHOLD", "40"))
 _STAGE_SCORE_THRESHOLD = int(os.environ.get("STAGE_SCORE_THRESHOLD", "40"))
+_ROLE_SCORE_THRESHOLD = int(os.environ.get("ROLE_SCORE_THRESHOLD", "30"))
+_FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
 _AND_SPLIT_RE = re.compile(r"\s*(?:,| and )\s*", re.IGNORECASE)
 _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
@@ -227,9 +229,6 @@ def _move_file_between_stages(drive, file_id: str, from_stage_id: str, to_stage_
         fields="id, parents",
         supportsAllDrives=True
     ).execute()
-
-_ROLE_SCORE_THRESHOLD = int(os.environ.get("ROLE_SCORE_THRESHOLD", "40"))
-_FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
 def _strip_ext(name: str) -> str:
     return re.sub(r"\.[A-Za-z0-9]+$", "", name or "")
