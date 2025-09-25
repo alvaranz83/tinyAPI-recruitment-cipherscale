@@ -43,24 +43,20 @@ _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
 ## Helper to use OpenAI API to talk to agent from external services
 async def process_with_gpt(prompt: str) -> str:
     """
-    Call the Cipherscale HR/Recruitment Ops Agent via OpenAI API.
+    Call GPT-5 with HR/Recruitment Ops system prompt.
     """
     try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-5",  # ✅ your agent is built on GPT-5
+        resp = await openai_client.chat.completions.create(
+            model="gpt-5",
             messages=[
                 {"role": "system", "content": "You are the Cipherscale HR/Recruitment Ops Agent."},
                 {"role": "user", "content": prompt},
-            ],
-            # Optional: invoke your Agent ID if available
-            extra_headers={"OpenAI-Beta": "assistants=v2"},
-            extra_body={
-                "assistant_id": "g-689617d9e69081919e5f7e75eefcbfa9-cipherscale-hr-recruitment-ops-agent"
-            }
+            ]
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         return f"❌ Error calling GPT Agent: {str(e)}"
+
 ## end
 
 def _norm(s: str) -> str:
