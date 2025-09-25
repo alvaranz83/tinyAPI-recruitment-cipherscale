@@ -2288,8 +2288,8 @@ def get_tahr_scoring_model(
     userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
 ):
     """
-    Fetch and extract the TA/HR Interview Scoring Model docs for a role.
-    - Locate 'TA/HR Interview Scoring Model' subfolder under the role.
+    Fetch and extract the TA/HR Interview Template docs for a role.
+    - Locate 'TA/HR Interview Template' subfolder under the role.
     - Extract full text of all documents inside it.
     """
     require_api_key(request)
@@ -2312,10 +2312,10 @@ def get_tahr_scoring_model(
         role_id = match["id"]
         role_display = match["name"]
 
-    # 🔍 Locate "TA/HR Interview Scoring Model" folder
-    scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Interview Scoring Model")
+    # 🔍 Locate "TA/HR Interview Template" folder
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "TA/HR Interview Template")
     if not scoring_folder:
-        raise HTTPException(404, f"No 'TA/HR Interview Scoring Model' folder found under role {role_display}")
+        raise HTTPException(404, f"No 'TA/HR Interview Template' folder found under role {role_display}")
 
     # 📂 Get all files in the folder
     files = _scan_stage_files(drive, scoring_folder["id"])
@@ -2466,11 +2466,11 @@ def get_first_tech_scoring_model(request: Request, body: GetFirstTechScoringMode
     role_display = match["name"]
 
     # 🔍 Locate scoring folder (fuzzy matching)
-    scoring_folder = _find_child_folder_by_name(drive, role_id, "1st Technical Interview Scoring Model")
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "1st Technical Interview Template")
     if not scoring_folder:
-        scoring_folder = _find_child_folder_by_name(drive, role_id, "First Technical Interview Scoring Model")
+        scoring_folder = _find_child_folder_by_name(drive, role_id, "1st Technical Interview Template")
     if not scoring_folder:
-        raise HTTPException(404, f"No '1st Technical Interview Scoring Model' folder found for {role_display}")
+        raise HTTPException(404, f"No '1st Technical Interview Template' folder found for {role_display}")
 
     # 📂 Get all files inside
     files = _scan_stage_files(drive, scoring_folder["id"])
