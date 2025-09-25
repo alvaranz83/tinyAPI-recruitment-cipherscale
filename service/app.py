@@ -10,7 +10,15 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 
-app = FastAPI()
+app = FastAPI(title="Recruiting Sheet Insights")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],  # or ["*"]
+    allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
+)
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_API_URL = "https://slack.com/api/chat.postMessage"
@@ -392,17 +400,6 @@ IMPERSONATE_HEADER = "x-user-email"  # or "x-impersonate-user" # Choose a header
 DEFAULT_IMPERSONATION_SUBJECT = os.environ.get("DEFAULT_IMPERSONATION_SUBJECT")  # optional fallback
 
 API_KEY = os.environ.get("API_KEY")  # set in Railway "Variables"
-
-app = FastAPI(title="Recruiting Sheet Insights")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # or ["*"]
-    allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
-)
-
 
 #Start of Helpers for Candidate Summary end point
 
