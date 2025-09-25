@@ -1847,83 +1847,72 @@ class FileTextByPromptRequest(BaseModel):
     prompt: str
     userEmail: Optional[str] = None
 
-@app.post("/candidates/fileText", response_model=StageFileExtract)
+class StageFileExtractWithResolution(StageFileExtract):
+    matchedRole: Optional[str] = None
+    matchedFolder: Optional[str] = None
+    matchedFile: Optional[str] = None
+    resolutionLog: Optional[List[str]] = None
+
+@app.post("/candidates/fileText", response_model=StageFileExtractWithResolution)
 def get_file_text_by_prompt(
     request: Request,
-    body: Optional[FileTextByPromptRequest] = None,
-    fileId: Optional[str] = Query(None, description="Google Drive file ID"),
-    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user")
+    body: FileTextByPromptRequest
 ):
-    """
-    Extract plain text from a specific candidate/interview/template file.
-
-    Supports two modes:
-    - Direct: pass `fileId` as query param (legacy behavior).
-    - Smart Prompt: send natural-language prompt in body (e.g., "show me the 1st Technical Interview Template for Senior DevOps Engineer").
-    """
     require_api_key(request)
-    subject = (body.userEmail if body else None) or userEmail or _extract_subject_from_request(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # ✅ Legacy: fileId directly provided
-    if fileId:
-        f = drive.files().get(fileId=fileId, fields="id,name,mimeType", supportsAllDrives=True).execute()
-        fname = f.get("name", "")
-        mime = f.get("mimeType", "")
-        text, err = (None, None)
-        if _is_doc_or_pdf(fname, mime):
-            text, err = _extract_text_from_file(drive, docs, f)
-        return StageFileExtract(id=f["id"], name=fname, mimeType=mime, text=text, error=err)
-
-    # ✅ New: Natural Language Prompt
-    if not body or not body.prompt:
-        raise HTTPException(400, "Must provide either fileId (query param) or prompt (POST body)")
-
     prompt = body.prompt.lower()
+    resolution_log = [f"Prompt received: {body.prompt}"]
+
     DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
     if not DEPARTMENTS_FOLDER_ID:
         raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
-    # --- Step 1: Try to detect role from prompt ---
-    # e.g. "senior devops engineer"
-    # We search all roles across departments
+    # Step 1: Role resolution
     score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, prompt)
     if not role_match or score < _ROLE_SCORE_THRESHOLD:
-        raise HTTPException(404, f"Could not resolve role from prompt: '{prompt}'")
+        resolution_log.append("❌ No role matched")
+        raise HTTPException(404, f"Could not resolve role from prompt: '{body.prompt}'")
+    resolution_log.append(f"✅ Matched role: {role_display} (score={score})")
 
-    role_id = role_match["id"]
-
-    # --- Step 2: Detect folder/stage in prompt ---
-    # Common phrases like "1st Technical Interview", "TA/HR Interview Template"
-    folder_candidates = list(_iter_child_folders(drive, role_id))
+    # Step 2: Folder/stage resolution
+    folder_candidates = list(_iter_child_folders(drive, role_match["id"]))
     folder_score, folder_match, folder_display = _best_match(prompt, [(f["name"], f) for f in folder_candidates])
     if not folder_match or folder_score < _STAGE_SCORE_THRESHOLD:
-        raise HTTPException(404, f"Could not resolve folder/stage from prompt: '{prompt}'")
+        resolution_log.append(f"❌ No folder matched for role={role_display}")
+        raise HTTPException(404, f"Could not resolve folder/stage from prompt: '{body.prompt}'")
+    resolution_log.append(f"✅ Matched folder: {folder_display} (score={folder_score})")
 
-    folder_id = folder_match["id"]
-
-    # --- Step 3: Find a document in that folder ---
-    files = list(_iter_child_files(drive, folder_id))
+    # Step 3: File resolution
+    files = list(_iter_child_files(drive, folder_match["id"]))
     if not files:
+        resolution_log.append(f"❌ No files in folder={folder_display}")
         raise HTTPException(404, f"No documents found in folder '{folder_display}' under role {role_display}")
 
     file_score, file_match, file_display = _best_match(prompt, [(f["name"], f) for f in files])
     if not file_match or file_score < _STAGE_SCORE_THRESHOLD:
-        # fallback: just pick first file in folder
-        file_match = files[0]
+        file_match = files[0]  # fallback
         file_display = file_match["name"]
+        resolution_log.append(f"⚠️ Fallback to first file: {file_display}")
+    else:
+        resolution_log.append(f"✅ Matched file: {file_display} (score={file_score})")
 
-    # --- Step 4: Extract text as before ---
+    # Step 4: Extract text
     text, err = (None, None)
     if _is_doc_or_pdf(file_match["name"], file_match["mimeType"]):
         text, err = _extract_text_from_file(drive, docs, file_match)
 
-    return StageFileExtract(
+    return StageFileExtractWithResolution(
         id=file_match["id"],
         name=file_match["name"],
         mimeType=file_match["mimeType"],
         text=text,
-        error=err
+        error=err,
+        matchedRole=role_display,
+        matchedFolder=folder_display,
+        matchedFile=file_display,
+        resolutionLog=resolution_log
     )
 
 
