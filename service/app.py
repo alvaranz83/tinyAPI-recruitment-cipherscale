@@ -9,9 +9,13 @@ from googleapiclient.http import MediaIoBaseUpload
 from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
+from openai import AsyncOpenAI
+
+# Initialize OpenAI once at top-level
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+#end
 
 app = FastAPI(title="Recruiting Sheet Insights")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
@@ -35,6 +39,29 @@ _FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
 _AND_SPLIT_RE = re.compile(r"\s*(?:,| and )\s*", re.IGNORECASE)
 _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
+
+## Helper to use OpenAI API to talk to agent from external services
+async def process_with_gpt(prompt: str) -> str:
+    """
+    Call the Cipherscale HR/Recruitment Ops Agent via OpenAI API.
+    """
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-5",  # ✅ your agent is built on GPT-5
+            messages=[
+                {"role": "system", "content": "You are the Cipherscale HR/Recruitment Ops Agent."},
+                {"role": "user", "content": prompt},
+            ],
+            # Optional: invoke your Agent ID if available
+            extra_headers={"OpenAI-Beta": "assistants=v2"},
+            extra_body={
+                "assistant_id": "g-689617d9e69081919e5f7e75eefcbfa9-cipherscale-hr-recruitment-ops-agent"
+            }
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"❌ Error calling GPT Agent: {str(e)}"
+## end
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "")).strip().lower()
