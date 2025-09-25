@@ -1843,39 +1843,90 @@ def candidates_summary_raw(
         departments=departments_out,
     )
 
+class FileTextByPromptRequest(BaseModel):
+    prompt: str
+    userEmail: Optional[str] = None
 
-@app.get("/candidates/fileText", response_model=StageFileExtract)
-def get_file_text(
+@app.post("/candidates/fileText", response_model=StageFileExtract)
+def get_file_text_by_prompt(
     request: Request,
-    fileId: str = Query(..., description="Google Drive file ID"),
-    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
+    body: Optional[FileTextByPromptRequest] = None,
+    fileId: Optional[str] = Query(None, description="Google Drive file ID"),
+    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user")
 ):
     """
-    Extract plain text from a specific candidate file (Google Doc, Docx, or PDF).
+    Extract plain text from a specific candidate/interview/template file.
+
+    Supports two modes:
+    - Direct: pass `fileId` as query param (legacy behavior).
+    - Smart Prompt: send natural-language prompt in body (e.g., "show me the 1st Technical Interview Template for Senior DevOps Engineer").
     """
     require_api_key(request)
-    subject = userEmail or _extract_subject_from_request(request)
+    subject = (body.userEmail if body else None) or userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    try:
+    # ✅ Legacy: fileId directly provided
+    if fileId:
         f = drive.files().get(fileId=fileId, fields="id,name,mimeType", supportsAllDrives=True).execute()
-    except Exception as e:
-        raise HTTPException(404, f"File '{fileId}' not found: {e}")
+        fname = f.get("name", "")
+        mime = f.get("mimeType", "")
+        text, err = (None, None)
+        if _is_doc_or_pdf(fname, mime):
+            text, err = _extract_text_from_file(drive, docs, f)
+        return StageFileExtract(id=f["id"], name=fname, mimeType=mime, text=text, error=err)
 
-    fname = f.get("name", "")
-    mime = f.get("mimeType", "")
+    # ✅ New: Natural Language Prompt
+    if not body or not body.prompt:
+        raise HTTPException(400, "Must provide either fileId (query param) or prompt (POST body)")
 
+    prompt = body.prompt.lower()
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # --- Step 1: Try to detect role from prompt ---
+    # e.g. "senior devops engineer"
+    # We search all roles across departments
+    score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, prompt)
+    if not role_match or score < _ROLE_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve role from prompt: '{prompt}'")
+
+    role_id = role_match["id"]
+
+    # --- Step 2: Detect folder/stage in prompt ---
+    # Common phrases like "1st Technical Interview", "TA/HR Interview Template"
+    folder_candidates = list(_iter_child_folders(drive, role_id))
+    folder_score, folder_match, folder_display = _best_match(prompt, [(f["name"], f) for f in folder_candidates])
+    if not folder_match or folder_score < _STAGE_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve folder/stage from prompt: '{prompt}'")
+
+    folder_id = folder_match["id"]
+
+    # --- Step 3: Find a document in that folder ---
+    files = list(_iter_child_files(drive, folder_id))
+    if not files:
+        raise HTTPException(404, f"No documents found in folder '{folder_display}' under role {role_display}")
+
+    file_score, file_match, file_display = _best_match(prompt, [(f["name"], f) for f in files])
+    if not file_match or file_score < _STAGE_SCORE_THRESHOLD:
+        # fallback: just pick first file in folder
+        file_match = files[0]
+        file_display = file_match["name"]
+
+    # --- Step 4: Extract text as before ---
     text, err = (None, None)
-    if _is_doc_or_pdf(fname, mime):
-        text, err = _extract_text_from_file(drive, docs, f)
+    if _is_doc_or_pdf(file_match["name"], file_match["mimeType"]):
+        text, err = _extract_text_from_file(drive, docs, file_match)
 
     return StageFileExtract(
-        id=f["id"],
-        name=fname,
-        mimeType=mime,
+        id=file_match["id"],
+        name=file_match["name"],
+        mimeType=file_match["mimeType"],
         text=text,
         error=err
     )
+
+
 
 # =========================
 # Pydantic models for Move API
