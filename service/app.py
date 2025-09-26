@@ -1681,7 +1681,6 @@ def candidates_summary_raw(
     Optimized: Returns Departments → Roles → Stages (metadata only).
     Fetches ALL descendants of DEPARTMENTS_FOLDER_ID in one bulk query.
     """
-
     require_api_key(request)
     subject = userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
@@ -1692,53 +1691,9 @@ def candidates_summary_raw(
 
     logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
 
-    # -------------------------------
-    # Bulk fetch ALL descendants in one query
-    # -------------------------------
-
-def _fetch_all_drive_items(drive) -> list[dict]:
-    """
-    Fetch all files and folders under the DEPARTMENTS_FOLDER_ID only.
-    Handles pagination and retries on transient 500 errors.
-    """
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise RuntimeError("DEPARTMENTS_FOLDER_ID env var not set")
-
-    items = []
-    page_token = None
-
-    while True:
-        for attempt in range(5):  # retry up to 5 times
-            try:
-                resp = drive.files().list(
-                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents or '{DEPARTMENTS_FOLDER_ID}' in ancestors",
-                    includeItemsFromAllDrives=True,
-                    supportsAllDrives=True,
-                    fields="nextPageToken, files(id,name,mimeType,parents)",
-                    pageSize=200,
-                    pageToken=page_token
-                ).execute()
-                break
-            except HttpError as e:
-                if e.resp.status == 500:
-                    wait = (2 ** attempt) + random.random()
-                    time.sleep(wait)
-                    continue
-                raise
-        else:
-            raise Exception("Drive API kept failing with 500s")
-
-        items.extend(resp.get("files", []))
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
-
-    return items
-
-
+    # ✅ Use improved fetch (scoped + retries)
     all_items = _fetch_all_drive_items(drive)
-    logger.info("📦 Total items fetched from Drive (bulk): %d", len(all_items))
+    logger.info("📦 Total items fetched from Drive (scoped to Departments): %d", len(all_items))
 
     # -------------------------------
     # Group items by parent folder
@@ -1765,15 +1720,11 @@ def _fetch_all_drive_items(drive) -> list[dict]:
         dept_id = dept["id"]
         dept_name = dept.get("name", "(unnamed)")
         roles_out: List[RoleWithStages] = []
-        dept_candidate_count = 0
-        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
 
         for role in get_children(dept_id, FOLDER_MIME):
             role_id = role["id"]
             role_name = role.get("name", "(unnamed)")
             stages_out: List[StageLite] = []
-            role_candidate_count = 0
-            logger.info("  📌 Role: %s (%s)", role_name, role_id)
 
             # Find "Hiring Pipeline" (case-insensitive)
             pipelines = [f for f in get_children(role_id, FOLDER_MIME)]
@@ -1781,9 +1732,8 @@ def _fetch_all_drive_items(drive) -> list[dict]:
                 (f for f in pipelines if f.get("name", "").strip().lower() == "hiring pipeline"),
                 None
             )
-            if not pipeline:
-                logger.warning("    ⚠️ No 'Hiring Pipeline' under role %s", role_name)
-            else:
+
+            if pipeline:
                 for stage in get_children(pipeline["id"], FOLDER_MIME):
                     stage_id = stage["id"]
                     stage_name = stage.get("name", "(unnamed)")
@@ -1798,12 +1748,6 @@ def _fetch_all_drive_items(drive) -> list[dict]:
                         for f in get_children(stage_id)
                         if f.get("mimeType") != FOLDER_MIME
                     ]
-                    stage_count = len(stage_files)
-                    role_candidate_count += stage_count
-                    logger.info("    📂 Stage: %s (%s) → %d candidates", stage_name, stage_id, stage_count)
-
-                    for sf in stage_files:
-                        logger.info("      📄 Candidate: %s (%s)", sf.name, sf.id)
 
                     stages_out.append(StageLite(
                         id=stage_id,
@@ -1811,16 +1755,11 @@ def _fetch_all_drive_items(drive) -> list[dict]:
                         files=stage_files
                     ))
 
-            dept_candidate_count += role_candidate_count
-            logger.info("  📊 Role total candidates: %s → %d", role_name, role_candidate_count)
-
             roles_out.append(RoleWithStages(
                 id=role_id,
                 name=role_name,
                 stages=stages_out
             ))
-
-        logger.info("🏢 Department total candidates: %s → %d", dept_name, dept_candidate_count)
 
         departments_out.append(DepartmentWithRolesStages(
             id=dept_id,
@@ -1828,8 +1767,15 @@ def _fetch_all_drive_items(drive) -> list[dict]:
             roles=roles_out
         ))
 
-    logger.info("✅ Built departments_out with %d departments", len(departments_out))
-
+    return DepartmentsRolesStagesResponse(
+        message="Departments, roles, and stages collected successfully (scoped fetch)",
+        updatedAt=datetime.now(timezone.utc).isoformat(),
+        scope={
+            "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
+            "impersonating": subject or None,
+        },
+        departments=departments_out,
+    )
     return DepartmentsRolesStagesResponse(
         message="Departments, roles, and stages collected successfully (bulk fetch)",
         updatedAt=datetime.now(timezone.utc).isoformat(),
