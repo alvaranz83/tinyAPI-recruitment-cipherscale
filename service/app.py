@@ -906,6 +906,45 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str, raw
 
     return doc_id
 
+def _fetch_all_drive_items(drive) -> list[dict]:
+    """
+    Fetch all files and folders under the DEPARTMENTS_FOLDER_ID only.
+    Handles pagination and retries on transient 500 errors.
+    """
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise RuntimeError("DEPARTMENTS_FOLDER_ID env var not set")
+
+    items = []
+    page_token = None
+
+    while True:
+        for attempt in range(5):  # retry up to 5 times
+            try:
+                resp = drive.files().list(
+                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents or '{DEPARTMENTS_FOLDER_ID}' in ancestors",
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
+                    fields="nextPageToken, files(id,name,mimeType,parents)",
+                    pageSize=200,
+                    pageToken=page_token
+                ).execute()
+                break
+            except HttpError as e:
+                if e.resp.status == 500:
+                    wait = (2 ** attempt) + random.random()
+                    time.sleep(wait)
+                    continue
+                raise
+        else:
+            raise Exception("Drive API kept failing with 500s")
+
+        items.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    return items
 
 #End of Helper Functions
 
