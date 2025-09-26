@@ -1117,11 +1117,11 @@ def create_jd(request: Request, body: CreateJDRequest):
         jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Description")
     
     # ✅ Create CVs Assessment folder if not exists
-    cv_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "CVs Assesment")
+    cv_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "CVs Assessment")
     if cv_assessment_folder:
         cv_assessment_folder_id = cv_assessment_folder["id"]
     else:
-        cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assesment")
+        cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assessment")
 
     
     # ✅ Default polished template
