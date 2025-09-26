@@ -2697,6 +2697,252 @@ def update_document(request: Request, body: UpdateDocumentRequest):
         docLink=f"https://docs.google.com/document/d/{body.fileId}/edit"
     )
 
+class CreateSecondTechInterviewRequest(BaseModel):
+    positionId: str
+    candidateName: str
+    content: Optional[str] = None
+    userEmail: Optional[str] = None  # for impersonation
+
+
+@app.post("/candidates/createSecondTechnicalInterview")
+def create_second_tech_interview(request: Request, body: CreateSecondTechInterviewRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    # ✅ Ensure 2nd Technical Interview Template folder exists
+    screening_folder = _find_child_folder_by_name(drive, body.positionId, "2nd Technical Interview Template")
+    if screening_folder:
+        screening_folder_id = screening_folder["id"]
+    else:
+        screening_folder_id = create_named_subfolder(drive, body.positionId, "2nd Technical Interview Template")
+
+    # ✅ Ensure 2nd Technical Interviews (Assessments) folder exists
+    tech_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "2nd Technical Interviews (Assessments)")
+    if tech_assessment_folder:
+        tech_assessment_folder_id = tech_assessment_folder["id"]
+    else:
+        tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "2nd Technical Interviews (Assessments)")
+
+    # ✅ Check if the candidate's interview doc already exists
+    query = (
+        "mimeType='application/vnd.google-apps.document' "
+        "and trashed=false "
+        f"and name='{body.candidateName} - 2nd Technical Interview' "
+        f"and '{screening_folder_id}' in parents"
+    )
+    results = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        includeItemsFromAllDrives=True,
+        supportsAllDrives=True
+    ).execute()
+
+    if results.get("files"):
+        existing = results["files"][0]
+        return {
+            "message": f"2nd Technical Interview doc already exists for {body.candidateName}",
+            "fileId": existing["id"],
+            "folderId": screening_folder_id,
+            "docLink": f"https://docs.google.com/document/d/{existing['id']}/edit",
+            "created": False
+        }
+
+    # ✅ Default polished template
+    content = body.content or f"""
+        2nd Technical Interview – {body.candidateName}
+
+        Candidate: {body.candidateName}
+        Role: [Specify Role Here]
+        Date: ___________________________
+        Interviewer(s): ___________________________
+
+        Advanced Technical Questions:
+        - Q1: ______________________________________
+        - Q2: ______________________________________
+        - Q3: ______________________________________
+        - Q4: ______________________________________
+        - Q5: ______________________________________
+
+        Feedback:
+        - Strengths:
+        ____________________________________________
+
+        - Areas for Improvement:
+        ____________________________________________
+
+        Scorecard (1–5 for each dimension):
+        - System Design / Architecture: ___
+        - Code Quality / Best Practices: ___
+        - Problem Solving: ___
+        - Collaboration & Communication: ___
+        - Culture Fit: ___
+
+        Overall Recommendation:
+        - Strong Hire / Hire / Neutral / No Hire
+    """
+
+    # ✅ Create doc inside 2nd Technical Interview Template
+    file_id = create_google_doc(
+        docs, drive, screening_folder_id,
+        f"{body.candidateName} - 2nd Technical Interview",
+        content
+    )
+
+    return {
+        "message": f"2nd Technical Interview doc created for {body.candidateName}",
+        "fileId": file_id,
+        "folderId": screening_folder_id,
+        "docLink": f"https://docs.google.com/document/d/{file_id}/edit",
+        "created": True
+    }
+
+
+class GetSecondTechTemplateRequest(BaseModel):
+    interviewTranscript: str
+    geminiMeetingNotes: str
+    role: str
+    candidate: str
+    assessmentType: str
+    userEmail: Optional[str] = None
+
+
+class GetSecondTechTemplateResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    candidate: str
+    assessmentType: str
+    interviewTranscript: Optional[str] = None
+    geminiMeetingNotes: Optional[str] = None
+    files: List[TemplateFile]
+
+
+@app.post("/positions/GetSecondTechnicalInterviewTemplate", response_model=GetSecondTechTemplateResponse)
+def get_second_tech_interview_template(request: Request, body: GetSecondTechTemplateRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve role
+    score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.role)
+    if not match or score < _ROLE_SCORE_THRESHOLD:
+        raise HTTPException(404, f"Could not resolve role '{body.role}' (score={score})")
+    role_id = match["id"]
+    role_display = match["name"]
+
+    # 🔍 Locate 2nd Technical Interview Template folder
+    scoring_folder = _find_child_folder_by_name(drive, role_id, "2nd Technical Interview Template")
+    if not scoring_folder:
+        raise HTTPException(404, f"No '2nd Technical Interview Template' folder found for {role_display}")
+
+    # 📂 Get all files inside
+    files = _scan_stage_files(drive, scoring_folder["id"])
+    out_files: List[TemplateFile] = []
+    for f in files:
+        text, err = (None, None)
+        if _is_doc_or_pdf(f["name"], f["mimeType"]):
+            text, err = _extract_text_from_file(drive, docs, f)
+        out_files.append(TemplateFile(
+            id=f["id"], name=f["name"], text=text, error=err
+        ))
+
+    return GetSecondTechTemplateResponse(
+        message=f"Fetched {len(out_files)} scoring model docs for role {role_display}",
+        roleId=role_id,
+        roleName=role_display,
+        candidate=body.candidate,
+        assessmentType=body.assessmentType,
+        interviewTranscript=body.interviewTranscript,
+        geminiMeetingNotes=body.geminiMeetingNotes,
+        files=out_files
+    )
+
+class CreateSecondTechInterviewAssessmentRequest(BaseModel):
+    positionId: Optional[str] = None   # direct role folder ID if known
+    roleQuery: str                     # fuzzy role name if no ID provided
+    candidateName: str                 # candidate name string (always used for doc naming)
+    assessmentContent: str             # ✅ mandatory
+    userEmail: Optional[str] = None    # impersonation
+    dryRun: bool = False
+
+
+class CreateSecondTechInterviewAssessmentResponse(BaseModel):
+    message: str
+    roleId: str
+    roleName: str
+    candidateName: str
+    createdDocs: Dict[str, str]   # { "assessment": link, "transcript": link, "geminiNotes": link }
+    errors: Optional[List[str]] = None
+
+
+@app.post("/candidates/createSecondTechnicalInterviewAssessment", response_model=CreateSecondTechInterviewAssessmentResponse)
+def create_second_tech_interview_assessment(request: Request, body: CreateSecondTechInterviewAssessmentRequest):
+    require_api_key(request)
+    subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, docs = get_clients(subject)
+
+    created_docs = {}
+    errors = []
+
+    if not body.assessmentContent:
+        raise HTTPException(400, "Must provide assessmentContent")
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
+
+    # 🔍 Resolve Role
+    role_id = body.positionId
+    role_display = body.roleQuery
+    if not role_id:
+        score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.roleQuery)
+        if not match or score < _ROLE_SCORE_THRESHOLD:
+            raise HTTPException(404, f"Could not resolve role '{body.roleQuery}' (score={score})")
+        role_id = match["id"]
+        role_display = match["name"]
+
+    # ✅ Ensure Assessment folder
+    def _get_or_create_assessment_folder(drive, role_id: str, folder_name: str) -> str:
+        for folder in _iter_child_folders(drive, role_id):
+            if folder["name"] == folder_name:
+                return folder["id"]
+        return create_named_subfolder(drive, role_id, folder_name)
+
+    assessment_folder_id = _get_or_create_assessment_folder(
+        drive, role_id, "2nd Technical Interviews (Assessments)"
+    )
+
+    def _save_doc(doc_name: str, content: str) -> str:
+        if body.dryRun:
+            return f"[DryRun] Would create: {doc_name}"
+        try:
+            new_id = create_google_doc(docs, drive, assessment_folder_id, doc_name, content)
+            return f"https://docs.google.com/document/d/{new_id}/edit"
+        except Exception as e:
+            errors.append(f"Failed to create {doc_name}: {e}")
+            return None
+
+    # ✅ Save only assessment
+    created_docs["assessment"] = _save_doc(
+        f"{body.candidateName} - 2nd Technical Interview Assessment", body.assessmentContent
+    )
+
+    return CreateSecondTechInterviewAssessmentResponse(
+        message="2nd Technical Interview Assessment saved successfully",
+        roleId=role_id,
+        roleName=role_display,
+        candidateName=body.candidateName,
+        createdDocs=created_docs,
+        errors=errors or None
+    )
+
+
+
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
@@ -2718,8 +2964,6 @@ async def slack_events(request: Request):
                     headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
                     json={"channel": channel_id, "text": response_text}
                 )
-
-    return {"ok": True}
 
     return {"ok": True}
 
