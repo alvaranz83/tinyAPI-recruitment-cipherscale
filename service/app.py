@@ -942,7 +942,10 @@ def create_position(request: Request, body: PositionRequest):
         f"and trashed=false and name='{department}' "
         f"and '{DEPARTMENTS_FOLDER_ID}' in parents"
     )
-    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+    results = drive.files().list(
+        q=query, fields="files(id,name)",
+        includeItemsFromAllDrives=True, supportsAllDrives=True
+    ).execute()
     items = results.get("files", [])
 
     if items:
@@ -956,7 +959,10 @@ def create_position(request: Request, body: PositionRequest):
         f"and trashed=false and name='{name}' "
         f"and '{department_folder_id}' in parents"
     )
-    results = drive.files().list(q=query, fields="files(id,name)", includeItemsFromAllDrives=True, supportsAllDrives=True).execute()
+    results = drive.files().list(
+        q=query, fields="files(id,name)",
+        includeItemsFromAllDrives=True, supportsAllDrives=True
+    ).execute()
     if results.get("files"):
         return {
             "message": f"Role '{name}' already exists in {department}",
@@ -968,13 +974,38 @@ def create_position(request: Request, body: PositionRequest):
     # Step 2: Create role folder
     position_id = create_folder(drive, name, department_folder_id)
 
-    
+    # Step 3: Ensure default subfolders exist
+    default_subfolders = [
+        "Job Description",
+        "CVs Assessment",
+        "TA/HR Interview Template",
+        "TA/HR Interviews (Assessments)",
+        "1st Technical Interview Template",
+        "1st Technical Interviews (Assessments)",
+        "2nd Technical Interview Template",
+        "2nd Technical Interviews (Assessments)",
+        "Hiring Pipeline"
+    ]
+
+    created_subfolders = []
+    for sub in default_subfolders:
+        existing = _find_child_folder_by_name(drive, position_id, sub)
+        if existing:
+            sub_id = existing["id"]
+            created = False
+        else:
+            sub_id = create_named_subfolder(drive, position_id, sub)
+            created = True
+        created_subfolders.append({"name": sub, "id": sub_id, "created": created})
+
     return {
         "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
         "departmentFolderId": department_folder_id,
-        "created": True
+        "created": True,
+        "subfolders": created_subfolders
     }
+
 
 @app.get("/positions/list")
 def list_positions(request: Request, department: Optional[str] = None):
