@@ -1078,11 +1078,20 @@ def create_jd(request: Request, body: CreateJDRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # ✅ Always create a fresh subfolder for JD
-    jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Description")
+    # ✅ Create Job Description folder if not exists
+    jd_folder = _find_child_folder_by_name(drive, body.positionId, "Job Description")
+    if jd_folder:
+        jd_folder_id = jd_folder["id"]
+    else:
+        jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Description")
+    
+    # ✅ Create CVs Assessment folder if not exists
+    cv_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "CVs Assesment")
+    if cv_assessment_folder:
+        cv_assessment_folder_id = cv_assessment_folder["id"]
+    else:
+        cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assesment")
 
-    # Create extra CV assessment folder
-    cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assesment")
     
     # ✅ Default polished template
     content = body.content or f"""
@@ -1575,8 +1584,12 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
         supportsAllDrives=True
     ).execute().get("files", [])
 
-    # Create "Hiring Pipeline" inside job position
-    pipeline_id = create_named_subfolder(drive, body.positionId, "Hiring Pipeline")
+    # Create "Hiring Pipeline" inside job position if not exists
+    pipeline = _find_child_folder_by_name(drive, body.positionId, "Hiring Pipeline")
+    if pipeline:
+        pipeline_id = pipeline["id"]
+    else:
+        pipeline_id = create_named_subfolder(drive, body.positionId, "Hiring Pipeline")
 
     created_stages = []
     for stage in stages:
