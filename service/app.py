@@ -906,45 +906,31 @@ def create_google_doc(docs, drive, folder_id: str, title: str, content: str, raw
 
     return doc_id
 
-def _fetch_all_drive_items(drive) -> list[dict]:
+def _fetch_all_drive_items(drive):
     """
-    Fetch all files and folders under the DEPARTMENTS_FOLDER_ID only.
-    Handles pagination and retries on transient 500 errors.
+    Fetch ALL items in Drive (not just scoped to Departments).
+    This ensures we capture the entire folder tree: Departments → Roles → Hiring Pipeline → Stages → Candidate files.
     """
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise RuntimeError("DEPARTMENTS_FOLDER_ID env var not set")
-
-    items = []
+    query = "trashed=false"
+    results = []
     page_token = None
 
     while True:
-        for attempt in range(5):  # retry up to 5 times
-            try:
-                resp = drive.files().list(
-                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents",
-                    includeItemsFromAllDrives=True,
-                    supportsAllDrives=True,
-                    fields="nextPageToken, files(id,name,mimeType,parents)",
-                    pageSize=200,
-                    pageToken=page_token
-                ).execute()
-                break
-            except HttpError as e:
-                if e.resp.status == 500:
-                    wait = (2 ** attempt) + random.random()
-                    time.sleep(wait)
-                    continue
-                raise
-        else:
-            raise Exception("Drive API kept failing with 500s")
+        response = drive.files().list(
+            q=query,
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+            fields="nextPageToken, files(id, name, mimeType, parents)",
+            pageToken=page_token
+        ).execute()
 
-        items.extend(resp.get("files", []))
-        page_token = resp.get("nextPageToken")
-        if not page_token:
+        results.extend(response.get("files", []))
+        page_token = response.get("nextPageToken")
+        if page_token is None:
             break
 
-    return items
+    return results
+
 
 #End of Helper Functions
 
@@ -1710,120 +1696,78 @@ class DepartmentsRolesStagesResponse(BaseModel):
     scope: CandidatesSummaryScope  # <-- now matches schema
     departments: List[DepartmentWithRolesStages]
 
-
 @app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
-def candidates_summary_raw(
-    request: Request,
-    userEmail: Optional[str] = Query(None, description="Impersonate this Workspace user"),
-):
+def get_candidates_summary(userEmail: Optional[str] = None):
     """
-    Optimized: Returns Departments → Roles → Stages (metadata only).
-    Fetches ALL descendants of DEPARTMENTS_FOLDER_ID in one bulk query.
+    Returns departments, roles, stages, and candidate files under each stage.
+    Always uses a full bulk Drive fetch so candidate files are included.
     """
-    require_api_key(request)
-    subject = userEmail or _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
-
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
-
+    drive = _get_drive_client(userEmail)
     logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
 
-    # ✅ Use improved fetch (scoped + retries)
+    # Fetch everything in one go (bulk)
     all_items = _fetch_all_drive_items(drive)
-    logger.info("📦 Total items fetched from Drive (scoped to Departments): %d", len(all_items))
+    logger.info("📦 Total items fetched from Drive (bulk): %d", len(all_items))
 
-    # -------------------------------
-    # Group items by parent folder
-    # -------------------------------
-    children_by_parent: dict[str, list[dict]] = {}
+    # Build parent→children map
+    children_by_parent = {}
     for item in all_items:
-        for p in item.get("parents", []):
-            children_by_parent.setdefault(p, []).append(item)
+        for parent in item.get("parents", []):
+            children_by_parent.setdefault(parent, []).append(item)
 
-    def get_children(pid: str, mime_filter: Optional[str] = None) -> list[dict]:
-        kids = children_by_parent.get(pid, [])
-        if mime_filter:
-            kids = [c for c in kids if c.get("mimeType") == mime_filter]
-        return kids
+    # Collect departments
+    departments_out = []
+    for dept in children_by_parent.get(DEPARTMENTS_FOLDER_ID, []):
+        dept_id, dept_name = dept["id"], dept["name"]
+        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
 
-    FOLDER_MIME = "application/vnd.google-apps.folder"
+        roles_out = []
+        for role in children_by_parent.get(dept_id, []):
+            role_id, role_name = role["id"], role["name"]
 
-    # -------------------------------
-    # Build hierarchy in memory
-    # -------------------------------
-    departments_out: List[DepartmentWithRolesStages] = []
-
-    for dept in get_children(DEPARTMENTS_FOLDER_ID, FOLDER_MIME):
-        dept_id = dept["id"]
-        dept_name = dept.get("name", "(unnamed)")
-        roles_out: List[RoleWithStages] = []
-
-        for role in get_children(dept_id, FOLDER_MIME):
-            role_id = role["id"]
-            role_name = role.get("name", "(unnamed)")
-            stages_out: List[StageLite] = []
-
-            # Find "Hiring Pipeline" (case-insensitive)
-            pipelines = [f for f in get_children(role_id, FOLDER_MIME)]
-            pipeline = next(
-                (f for f in pipelines if f.get("name", "").strip().lower() == "hiring pipeline"),
+            # Find Hiring Pipeline folder
+            hiring_pipeline = next(
+                (f for f in children_by_parent.get(role_id, []) if f["name"].strip().lower() == "hiring pipeline"),
                 None
             )
+            if not hiring_pipeline:
+                continue
 
-            if pipeline:
-                for stage in get_children(pipeline["id"], FOLDER_MIME):
-                    stage_id = stage["id"]
-                    stage_name = stage.get("name", "(unnamed)")
-                    stage_files = [
-                        StageFileExtract(
-                            id=f["id"],
-                            name=f.get("name", ""),
-                            mimeType=f.get("mimeType", ""),
-                            text=None,
-                            error=None
-                        )
-                        for f in get_children(stage_id)
-                        if f.get("mimeType") != FOLDER_MIME
-                    ]
+            stages_out = []
+            for stage in children_by_parent.get(hiring_pipeline["id"], []):
+                stage_id, stage_name = stage["id"], stage["name"]
 
-                    stages_out.append(StageLite(
-                        id=stage_id,
-                        name=stage_name,
-                        files=stage_files
-                    ))
+                # Candidate files in stage
+                candidates = [
+                    {
+                        "id": f["id"],
+                        "name": f["name"],
+                        "mimeType": f["mimeType"],
+                        "text": None,
+                        "error": None
+                    }
+                    for f in children_by_parent.get(stage_id, [])
+                    if f.get("mimeType") != "application/vnd.google-apps.folder"
+                ]
 
-            roles_out.append(RoleWithStages(
-                id=role_id,
-                name=role_name,
-                stages=stages_out
-            ))
+                logger.info("   📂 Stage: %s (%s) → %d candidates", stage_name, stage_id, len(candidates))
+                for c in candidates:
+                    logger.info("      📄 Candidate: %s (%s)", c["name"], c["id"])
 
-        departments_out.append(DepartmentWithRolesStages(
-            id=dept_id,
-            name=dept_name,
-            roles=roles_out
-        ))
+                stages_out.append(Stage(id=stage_id, name=stage_name, files=candidates))
 
-    return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (scoped fetch)",
-        updatedAt=datetime.now(timezone.utc).isoformat(),
-        scope={
-            "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
-            "impersonating": subject or None,
-        },
-        departments=departments_out,
-    )
+            if stages_out:
+                roles_out.append(Role(id=role_id, name=role_name, stages=stages_out))
+
+        departments_out.append(Department(id=dept_id, name=dept_name, roles=roles_out))
+
     return DepartmentsRolesStagesResponse(
         message="Departments, roles, and stages collected successfully (bulk fetch)",
-        updatedAt=datetime.now(timezone.utc).isoformat(),
-        scope={
-            "departmentsFolderId": DEPARTMENTS_FOLDER_ID,
-            "impersonating": subject or None,
-        },
+        flowsFolderId=DEPARTMENTS_FOLDER_ID,
+        createdRootFolder=False,
         departments=departments_out,
     )
+
 
 class FileTextByPromptRequest(BaseModel):
     prompt: str
