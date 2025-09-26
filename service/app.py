@@ -14,7 +14,7 @@ from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
 
 # Path to your service account key
-SERVICE_ACCOUNT_FILE = "service_account.json"
+SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 # Initialize OpenAI once at top-level
