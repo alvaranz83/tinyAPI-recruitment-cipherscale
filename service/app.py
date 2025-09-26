@@ -11,8 +11,11 @@ from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 from googleapiclient.errors import HttpError
+from google.oauth2 import service_account
 
-
+# Path to your service account key
+SERVICE_ACCOUNT_FILE = "service_account.json"
+SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 # Initialize OpenAI once at top-level
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -931,6 +934,19 @@ def _fetch_all_drive_items(drive):
 
     return results
 
+def _get_drive_client(userEmail: Optional[str] = None):
+    """
+    Returns a Drive API client.
+    If userEmail is provided, impersonates that user (requires domain-wide delegation).
+    """
+    creds = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES
+    )
+
+    if userEmail:
+        creds = creds.with_subject(userEmail)
+
+    return build("drive", "v3", credentials=creds)
 
 #End of Helper Functions
 
