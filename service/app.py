@@ -922,7 +922,7 @@ def _fetch_all_drive_items(drive) -> list[dict]:
         for attempt in range(5):  # retry up to 5 times
             try:
                 resp = drive.files().list(
-                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents or '{DEPARTMENTS_FOLDER_ID}' in ancestors",
+                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents",
                     includeItemsFromAllDrives=True,
                     supportsAllDrives=True,
                     fields="nextPageToken, files(id,name,mimeType,parents)",
