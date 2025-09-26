@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
-import os, json, textwrap, re, uuid, logging, io, httpx
+import os, json, textwrap, re, uuid, logging, io, httpx, time, random
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload 
@@ -10,6 +10,9 @@ from google.auth.exceptions import RefreshError # For user impersonation
 from pydantic import BaseModel, Field
 from difflib import SequenceMatcher
 from openai import AsyncOpenAI
+from googleapiclient.errors import HttpError
+
+
 
 # Initialize OpenAI once at top-level
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -1692,23 +1695,47 @@ def candidates_summary_raw(
     # -------------------------------
     # Bulk fetch ALL descendants in one query
     # -------------------------------
-    def _fetch_all_drive_items(drive) -> list[dict]:
-        items = []
-        page_token = None
-        while True:
-            resp = drive.files().list(
-                q="trashed=false",
-                corpora="allDrives",
-                includeItemsFromAllDrives=True,
-                supportsAllDrives=True,
-                fields="nextPageToken, files(id,name,mimeType,parents)",
-                pageToken=page_token
-            ).execute()
-            items.extend(resp.get("files", []))
-            page_token = resp.get("nextPageToken")
-            if not page_token:
+
+def _fetch_all_drive_items(drive) -> list[dict]:
+    """
+    Fetch all files and folders under the DEPARTMENTS_FOLDER_ID only.
+    Handles pagination and retries on transient 500 errors.
+    """
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise RuntimeError("DEPARTMENTS_FOLDER_ID env var not set")
+
+    items = []
+    page_token = None
+
+    while True:
+        for attempt in range(5):  # retry up to 5 times
+            try:
+                resp = drive.files().list(
+                    q=f"'{DEPARTMENTS_FOLDER_ID}' in parents or '{DEPARTMENTS_FOLDER_ID}' in ancestors",
+                    includeItemsFromAllDrives=True,
+                    supportsAllDrives=True,
+                    fields="nextPageToken, files(id,name,mimeType,parents)",
+                    pageSize=200,
+                    pageToken=page_token
+                ).execute()
                 break
-        return items
+            except HttpError as e:
+                if e.resp.status == 500:
+                    wait = (2 ** attempt) + random.random()
+                    time.sleep(wait)
+                    continue
+                raise
+        else:
+            raise Exception("Drive API kept failing with 500s")
+
+        items.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    return items
+
 
     all_items = _fetch_all_drive_items(drive)
     logger.info("📦 Total items fetched from Drive (bulk): %d", len(all_items))
