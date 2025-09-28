@@ -1761,15 +1761,14 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
     }
 
 # ===== Pydantic models for Candidates summary/fileText =====
-
-
-class CandidateLite(BaseModel):
+# --- Response Models ---
+class CandidateSummary(BaseModel):
     id: int
     full_name: str
 
 class StageSummary(BaseModel):
     name: str
-    candidates: List[CandidateLite]
+    candidates: List[CandidateSummary]
 
 class RoleSummary(BaseModel):
     name: str
@@ -1787,27 +1786,13 @@ class CandidatesSummaryResponse(BaseModel):
     departments: List[DepartmentSummary]
 
 
+# --- Endpoint ---
 @app.get("/candidates/summary", response_model=CandidatesSummaryResponse)
 async def get_candidates_summary(request: Request, userEmail: Optional[str] = Query(None)):
-    """
-    Returns candidate counts grouped by department → role → stage.
-    Totals are included for overall, per department, and per role.
-    Sorted so busiest pipelines appear first.
-    """
     require_api_key(request)
 
     rows = await database.fetch_all("""
-        SELECT 
-            current_role_name,
-            current_stage_name,
-            full_name,
-            id,
-            (SELECT d.departmentname 
-             FROM departments d 
-             WHERE d.id = (SELECT r.department_id 
-                           FROM roles r 
-                           WHERE r.name = candidates.current_role_name)
-            ) AS department_name
+        SELECT id, full_name, current_role_name, current_stage_name
         FROM candidates
     """)
 
@@ -1818,10 +1803,10 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
             departments=[]
         )
 
-    # ✅ Build nested structure
+    # Build hierarchy: Department → Role → Stage → Candidates
     departments_dict: Dict[str, Dict[str, Dict[str, List[dict]]]] = {}
     for row in rows:
-        dept_name = row["department_name"] or "Unknown Department"
+        dept_name = "Unknown Department"  # Placeholder until you normalize departments
         role_name = row["current_role_name"] or "Unknown Role"
         stage_name = row["current_stage_name"] or "Unassigned"
 
@@ -1830,41 +1815,33 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
         stage = role.setdefault(stage_name, [])
         stage.append({"id": row["id"], "full_name": row["full_name"]})
 
-    # ✅ Convert to Pydantic structure with counts
+    # Convert to Pydantic response
     departments_out = []
+    total_candidates = len(rows)
+
     for dept_name, roles in departments_dict.items():
         dept_total = 0
         roles_out = []
+
         for role_name, stages in roles.items():
-            role_total = sum(len(candidates_list) for candidates_list in stages.values())
+            role_total = sum(len(cands) for cands in stages.values())
             dept_total += role_total
 
-            # Sort stages by candidate count DESC
-            sorted_stages = sorted(
-                stages.items(),
-                key=lambda kv: len(kv[1]),
-                reverse=True
-            )
             stages_out = [
-                StageSummary(name=stage_name, candidates=candidates_list)
-                for stage_name, candidates_list in sorted_stages
+                StageSummary(name=stage_name, candidates=[CandidateSummary(**c) for c in cands])
+                for stage_name, cands in stages.items()
             ]
 
             roles_out.append(RoleSummary(name=role_name, count=role_total, stages=stages_out))
 
-        # Sort roles by count DESC
-        roles_out = sorted(roles_out, key=lambda r: r.count, reverse=True)
-
         departments_out.append(DepartmentSummary(name=dept_name, count=dept_total, roles=roles_out))
-
-    # Sort departments by count DESC
-    departments_out = sorted(departments_out, key=lambda d: d.count, reverse=True)
 
     return CandidatesSummaryResponse(
         message="Candidate summary fetched successfully",
-        total_candidates=len(rows),
+        total_candidates=total_candidates,
         departments=departments_out
     )
+
 
 
 class FileTextByPromptRequest(BaseModel):
