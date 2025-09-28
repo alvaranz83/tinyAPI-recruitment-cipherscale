@@ -1523,16 +1523,28 @@ async def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
             flow_folder_id = create_folder(drive, flow.flowName, flows_folder_id)
             flow_created = True
 
-        # ✅ Insert flow into DB (ignore if exists)
-        query = """INSERT INTO hiring_flows (flowName, createdByUser)
-                   VALUES (:flowName, :createdByUser)
-                   ON CONFLICT (flowName) DO NOTHING
-                   RETURNING id"""
-        values = {"flowName": flow.flowName, "createdByUser": subject or "system"}
+        # ✅ Insert flow into DB (store stages also in flowstage column)
+        stages_serialized = json.dumps(flow.stages)  # store as JSON string
+        
+        query = """
+            INSERT INTO hiring_flows (flowName, createdByUser, flowstage)
+            VALUES (:flowName, :createdByUser, :flowstage)
+            ON CONFLICT (flowName) DO NOTHING
+            RETURNING id
+        """
+        values = {
+            "flowName": flow.flowName,
+            "createdByUser": subject or "system",
+            "flowstage": stages_serialized
+        }
         flow_id = await database.execute(query=query, values=values)
-
-        # If already exists, fetch its ID
+        
+        # If already exists, update flowstage column too
         if not flow_id:
+            await database.execute(
+                "UPDATE hiring_flows SET flowstage = :flowstage WHERE flowName = :flowName",
+                {"flowName": flow.flowName, "flowstage": stages_serialized}
+            )
             flow_id = await database.fetch_val(
                 "SELECT id FROM hiring_flows WHERE flowName = :flowName",
                 {"flowName": flow.flowName}
