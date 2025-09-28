@@ -12,6 +12,35 @@ from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
+from databases import Database
+from sqlalchemy import create_engine, MetaData
+from db import database
+
+
+app = FastAPI(title="Recruiting Sheet Insights")
+
+@app.on_event("startup")
+async def startup():
+    await database.connect()
+
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],  # or ["*"]
+    allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
+)
+
+# DB Related - Dev DB
+DB_USER = os.getenv("DB_USER", "postgres")
+DB_PASS = os.getenv("DB_PASS", "yourpassword")
+DB_NAME = os.getenv("DB_NAME", "recruiting_api_dev")
+DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
+DB_PORT = os.getenv("DB_PORT", "5432")
 
 # Path to your service account key
 SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -20,15 +49,6 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 # Initialize OpenAI once at top-level
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 #end
-
-app = FastAPI(title="Recruiting Sheet Insights")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://your-frontend.example.com", "http://localhost:3000"],  # or ["*"] while testing
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # or ["*"]
-    allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
-)
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_API_URL = "https://slack.com/api/chat.postMessage"
