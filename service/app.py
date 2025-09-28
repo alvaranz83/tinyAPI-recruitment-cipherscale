@@ -13,7 +13,7 @@ from openai import AsyncOpenAI
 from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
 from databases import Database
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, insert
 from db import database
 
 
@@ -1468,8 +1468,10 @@ class CreateHiringFlowsRequest(BaseModel):
     flows: List[HiringFlow]
     userEmail: Optional[str] = None  # impersonation
 
+from sqlalchemy import insert
+
 @app.post("/HiringFlows/create")
-def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
+async def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
@@ -1478,7 +1480,7 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
     if not HIRING_FOLDER_ID:
         raise HTTPException(500, "HIRING_FOLDER_ID env var not set")
 
-    # 1. Check (or create) "Hiring Flows" folder under Hiring
+    # 1. Ensure "Hiring Flows" folder exists in Drive
     query = (
         "mimeType='application/vnd.google-apps.folder' "
         "and trashed=false and name='Hiring Flows' "
@@ -1499,8 +1501,9 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
         created_root = True
 
     created_flows = []
+
     for flow in body.flows:
-        # 2. Check (or create) flow subfolder
+        # 2. Check (or create) flow subfolder in Drive
         query = (
             "mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{flow.flowName}' "
@@ -1520,9 +1523,24 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
             flow_folder_id = create_folder(drive, flow.flowName, flows_folder_id)
             flow_created = True
 
-        # 3. Create stage subfolders
+        # ✅ Insert flow into DB (ignore if exists)
+        query = """INSERT INTO hiring_flows (flowName, createdByUser)
+                   VALUES (:flowName, :createdByUser)
+                   ON CONFLICT (flowName) DO NOTHING
+                   RETURNING id"""
+        values = {"flowName": flow.flowName, "createdByUser": subject or "system"}
+        flow_id = await database.execute(query=query, values=values)
+
+        # If already exists, fetch its ID
+        if not flow_id:
+            flow_id = await database.fetch_val(
+                "SELECT id FROM hiring_flows WHERE flowName = :flowName",
+                {"flowName": flow.flowName}
+            )
+
         created_stages = []
         for stage in flow.stages:
+            # 3. Create stage subfolder in Drive
             query = (
                 "mimeType='application/vnd.google-apps.folder' "
                 f"and trashed=false and name='{stage}' "
@@ -1541,6 +1559,12 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
             else:
                 stage_id = create_folder(drive, stage, flow_folder_id)
                 stage_created = True
+
+            # ✅ Insert stage into DB
+            query = """INSERT INTO flow_stages (stageName, flow_id)
+                       VALUES (:stageName, :flow_id)
+                       ON CONFLICT DO NOTHING"""
+            await database.execute(query=query, values={"stageName": stage, "flow_id": flow_id})
 
             created_stages.append({
                 "name": stage,
@@ -1561,7 +1585,7 @@ def create_hiring_flows(request: Request, body: CreateHiringFlowsRequest):
         "createdRootFolder": created_root,
         "flows": created_flows
     }
-    
+
 
 @app.get("/HiringFlows/read")
 def read_hiring_flows(request: Request):
