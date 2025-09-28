@@ -1988,12 +1988,11 @@ class MoveResponse(BaseModel):
 # =========================
 
 @app.post("/candidates/moveByPrompt", response_model=MoveResponse)
-def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
+async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
-    # Build stage + file indexes for the role (position)
     stages, file_index = _build_candidate_index(drive, body.positionId)
     if not stages:
         raise HTTPException(404, "Hiring Pipeline / stages not found under the specified role")
@@ -2005,16 +2004,14 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
     decisions: List[MoveDecision] = []
 
     for g in groups:
-        # ✅ Unpack to (score, payload_dict, display_name)
         stage_score, stage_match, stage_display = _resolve_best_stage(g["stageQuery"], stages)
 
         for cand_q in g["candidateQueries"]:
             cand_score, cand_match, cand_display = _resolve_best_candidate_file(cand_q, file_index)
 
-            # ✅ Use the payload dicts (stage_match / cand_match) when indexing by keys
             decision = MoveDecision(
                 candidateQuery=cand_q,
-                candidateMatchedName=cand_display if cand_match else None,  # human-friendly echo
+                candidateMatchedName=cand_display if cand_match else None,
                 candidateFileId=cand_match["id"] if cand_match else None,
                 candidateScore=cand_score,
                 fromStageId=cand_match["stageId"] if cand_match else None,
@@ -2027,29 +2024,59 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
                 error=None
             )
 
-            # Threshold & validation
-            if not cand_match:
-                decision.error = "No candidate file matched"
-            elif cand_score < _NAME_SCORE_THRESHOLD:
-                decision.error = f"Low candidate match score ({cand_score}<{_NAME_SCORE_THRESHOLD})"
-            elif not stage_match:
-                decision.error = "No target stage matched"
-            elif stage_score < _STAGE_SCORE_THRESHOLD:
-                decision.error = f"Low stage match score ({stage_score}<{_STAGE_SCORE_THRESHOLD})"
-            elif cand_match["stageId"] == stage_match["id"]:
-                decision.error = "Already in target stage"
-            else:
+            if cand_match and stage_match and cand_score >= _NAME_SCORE_THRESHOLD and stage_score >= _STAGE_SCORE_THRESHOLD and cand_match["stageId"] != stage_match["id"]:
                 if not body.dryRun:
                     try:
+                        # ✅ Move file in Drive
                         _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
                         decision.moved = True
-                        # Keep local index in sync so subsequent moves see the new location
+
+                        new_stage = stage_match["name"]
+                        cv_name = cand_match["name"]
+
+                        # ✅ Update candidates table
+                        await database.execute(
+                            """
+                            UPDATE candidates
+                            SET current_stage_name = :new_stage,
+                                status = CASE WHEN LOWER(:new_stage) = 'disqualified' THEN 'disqualified' ELSE status END
+                            WHERE cv_name = :cv_name
+                            """,
+                            {"new_stage": new_stage, "cv_name": cv_name}
+                        )
+
+                        # ✅ Insert into candidate_moves
+                        candidate_id = await database.fetch_val("SELECT id FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
+                        role_name = await database.fetch_val("SELECT current_role_name FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
+
+                        await database.execute(
+                            """
+                            INSERT INTO candidate_moves (
+                                movefrom, moveto, movedbyuser,
+                                candidateid, candidatename,
+                                rolleid, rolename, moved_at
+                            )
+                            VALUES (:movefrom, :moveto, :movedbyuser,
+                                    :candidateid, :candidatename,
+                                    :rolleid, :rolename, NOW())
+                            """,
+                            {
+                                "movefrom": cand_match["stageName"],
+                                "moveto": new_stage,
+                                "movedbyuser": subject or "system",
+                                "candidateid": candidate_id,
+                                "candidatename": cand_match["name"],
+                                "rolleid": body.positionId,
+                                "rolename": role_name
+                            }
+                        )
+
+                        # Keep local index in sync
                         file_index[cand_match["id"]]["stageId"] = stage_match["id"]
                         file_index[cand_match["id"]]["stageName"] = stage_match["name"]
+
                     except Exception as e:
                         decision.error = f"Move failed: {e}"
-                else:
-                    decision.moved = False  # dry-run preview
 
             decisions.append(decision)
 
@@ -2067,7 +2094,7 @@ def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
 # =========================
 
 @app.post("/candidates/move", response_model=MoveResponse)
-def move_candidates_structured(request: Request, body: MoveStructuredRequest):
+async def move_candidates_structured(request: Request, body: MoveStructuredRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
@@ -2079,7 +2106,6 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
     decisions: List[MoveDecision] = []
 
     for grp in body.moves:
-        # ✅ Unpack to (score, payload_dict, display_name)
         stage_score, stage_match, stage_display = _resolve_best_stage(grp.stageQuery, stages)
 
         for cand_q in grp.candidateQueries:
@@ -2100,27 +2126,59 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
                 error=None
             )
 
-            if not cand_match:
-                decision.error = "No candidate file matched"
-            elif cand_score < _NAME_SCORE_THRESHOLD:
-                decision.error = f"Low candidate match score ({cand_score}<{_NAME_SCORE_THRESHOLD})"
-            elif not stage_match:
-                decision.error = "No target stage matched"
-            elif stage_score < _STAGE_SCORE_THRESHOLD:
-                decision.error = f"Low stage match score ({stage_score}<{_STAGE_SCORE_THRESHOLD})"
-            elif cand_match["stageId"] == stage_match["id"]:
-                decision.error = "Already in target stage"
-            else:
+            if cand_match and stage_match and cand_score >= _NAME_SCORE_THRESHOLD and stage_score >= _STAGE_SCORE_THRESHOLD and cand_match["stageId"] != stage_match["id"]:
                 if not body.dryRun:
                     try:
+                        # ✅ Move file in Drive
                         _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
                         decision.moved = True
+
+                        new_stage = stage_match["name"]
+                        cv_name = cand_match["name"]
+
+                        # ✅ Update candidates table
+                        await database.execute(
+                            """
+                            UPDATE candidates
+                            SET current_stage_name = :new_stage,
+                                status = CASE WHEN LOWER(:new_stage) = 'disqualified' THEN 'disqualified' ELSE status END
+                            WHERE cv_name = :cv_name
+                            """,
+                            {"new_stage": new_stage, "cv_name": cv_name}
+                        )
+
+                        # ✅ Insert into candidate_moves
+                        candidate_id = await database.fetch_val("SELECT id FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
+                        role_name = await database.fetch_val("SELECT current_role_name FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
+
+                        await database.execute(
+                            """
+                            INSERT INTO candidate_moves (
+                                movefrom, moveto, movedbyuser,
+                                candidateid, candidatename,
+                                rolleid, rolename, moved_at
+                            )
+                            VALUES (:movefrom, :moveto, :movedbyuser,
+                                    :candidateid, :candidatename,
+                                    :rolleid, :rolename, NOW())
+                            """,
+                            {
+                                "movefrom": cand_match["stageName"],
+                                "moveto": new_stage,
+                                "movedbyuser": subject or "system",
+                                "candidateid": candidate_id,
+                                "candidatename": cand_match["name"],
+                                "rolleid": body.positionId,
+                                "rolename": role_name
+                            }
+                        )
+
+                        # Keep local index in sync
                         file_index[cand_match["id"]]["stageId"] = stage_match["id"]
                         file_index[cand_match["id"]]["stageName"] = stage_match["name"]
+
                     except Exception as e:
                         decision.error = f"Move failed: {e}"
-                else:
-                    decision.moved = False
 
             decisions.append(decision)
 
@@ -2131,6 +2189,7 @@ def move_candidates_structured(request: Request, body: MoveStructuredRequest):
         thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
         decisions=decisions
     )
+
 
 # =========================
 # Pydantic models for UploadCVs
