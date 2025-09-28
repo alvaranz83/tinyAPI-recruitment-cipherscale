@@ -12,8 +12,8 @@ from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
-from databases import Database
 from sqlalchemy import create_engine, MetaData, insert
+from databases import Database
 from db import database
 
 
