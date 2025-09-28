@@ -1763,108 +1763,107 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
 # ===== Pydantic models for Candidates summary/fileText =====
 
 
-class StageFileExtract(BaseModel):
-    id: str
+class CandidateLite(BaseModel):
+    id: int
+    full_name: str
+
+class StageSummary(BaseModel):
     name: str
-    mimeType: str
-    text: Optional[str] = None
-    error: Optional[str] = None
+    candidates: List[CandidateLite]
 
-class StageLite(BaseModel):
-    id: str
+class RoleSummary(BaseModel):
     name: str
-    files: List[StageFileExtract] = Field(default_factory=list)
+    count: int
+    stages: List[StageSummary]
 
-class RoleWithStages(BaseModel):
-    id: str
+class DepartmentSummary(BaseModel):
     name: str
-    stages: List[StageLite] = Field(default_factory=list)
+    count: int
+    roles: List[RoleSummary]
 
-class DepartmentWithRolesStages(BaseModel):
-    id: str
-    name: str
-    roles: List[RoleWithStages] = Field(default_factory=list)
-
-class CandidatesSummaryScope(BaseModel):
-    departmentsFolderId: str
-    impersonating: Optional[str] = None
-
-class DepartmentsRolesStagesResponse(BaseModel):
+class CandidatesSummaryResponse(BaseModel):
     message: str
-    updatedAt: str  # ISO 8601 string
-    scope: CandidatesSummaryScope  # <-- now matches schema
-    departments: List[DepartmentWithRolesStages]
+    total_candidates: int
+    departments: List[DepartmentSummary]
 
-@app.get("/candidates/summary", response_model=DepartmentsRolesStagesResponse)
-def get_candidates_summary(userEmail: Optional[str] = None):
+
+@app.get("/candidates/summary", response_model=CandidatesSummaryResponse)
+async def get_candidates_summary(userEmail: Optional[str] = Query(None)):
     """
-    Returns departments, roles, stages, and candidate files under each stage.
-    Always uses a full bulk Drive fetch so candidate files are included.
+    Returns candidate counts grouped by department → role → stage.
+    Totals are included for overall, per department, and per role.
+    Sorted so busiest pipelines appear first.
     """
-    drive = _get_drive_client(userEmail)
-    logger.info("🔍 Using DEPARTMENTS_FOLDER_ID=%s", DEPARTMENTS_FOLDER_ID)
+    require_api_key(Request)
 
-    # Fetch everything in one go (bulk)
-    all_items = _fetch_all_drive_items(drive)
-    logger.info("📦 Total items fetched from Drive (bulk): %d", len(all_items))
+    rows = await database.fetch_all("""
+        SELECT 
+            current_role_name,
+            current_stage_name,
+            full_name,
+            id,
+            (SELECT d.departmentname 
+             FROM departments d 
+             WHERE d.id = (SELECT r.department_id 
+                           FROM roles r 
+                           WHERE r.name = candidates.current_role_name)
+            ) AS department_name
+        FROM candidates
+    """)
 
-    # Build parent→children map
-    children_by_parent = {}
-    for item in all_items:
-        for parent in item.get("parents", []):
-            children_by_parent.setdefault(parent, []).append(item)
+    if not rows:
+        return CandidatesSummaryResponse(
+            message="No candidates found",
+            total_candidates=0,
+            departments=[]
+        )
 
-    # Collect departments
+    # ✅ Build nested structure
+    departments_dict: Dict[str, Dict[str, Dict[str, List[dict]]]] = {}
+    for row in rows:
+        dept_name = row["department_name"] or "Unknown Department"
+        role_name = row["current_role_name"] or "Unknown Role"
+        stage_name = row["current_stage_name"] or "Unassigned"
+
+        dept = departments_dict.setdefault(dept_name, {})
+        role = dept.setdefault(role_name, {})
+        stage = role.setdefault(stage_name, [])
+        stage.append({"id": row["id"], "full_name": row["full_name"]})
+
+    # ✅ Convert to Pydantic structure with counts
     departments_out = []
-    for dept in children_by_parent.get(DEPARTMENTS_FOLDER_ID, []):
-        dept_id, dept_name = dept["id"], dept["name"]
-        logger.info("🏢 Department: %s (%s)", dept_name, dept_id)
-
+    for dept_name, roles in departments_dict.items():
+        dept_total = 0
         roles_out = []
-        for role in children_by_parent.get(dept_id, []):
-            role_id, role_name = role["id"], role["name"]
+        for role_name, stages in roles.items():
+            role_total = sum(len(candidates_list) for candidates_list in stages.values())
+            dept_total += role_total
 
-            # Find Hiring Pipeline folder
-            hiring_pipeline = next(
-                (f for f in children_by_parent.get(role_id, []) if f["name"].strip().lower() == "hiring pipeline"),
-                None
+            # Sort stages by candidate count DESC
+            sorted_stages = sorted(
+                stages.items(),
+                key=lambda kv: len(kv[1]),
+                reverse=True
             )
-            if not hiring_pipeline:
-                continue
+            stages_out = [
+                StageSummary(name=stage_name, candidates=candidates_list)
+                for stage_name, candidates_list in sorted_stages
+            ]
 
-            stages_out = []
-            for stage in children_by_parent.get(hiring_pipeline["id"], []):
-                stage_id, stage_name = stage["id"], stage["name"]
+            roles_out.append(RoleSummary(name=role_name, count=role_total, stages=stages_out))
 
-                # Candidate files in stage
-                candidates = [
-                    {
-                        "id": f["id"],
-                        "name": f["name"],
-                        "mimeType": f["mimeType"],
-                        "text": None,
-                        "error": None
-                    }
-                    for f in children_by_parent.get(stage_id, [])
-                    if f.get("mimeType") != "application/vnd.google-apps.folder"
-                ]
+        # Sort roles by count DESC
+        roles_out = sorted(roles_out, key=lambda r: r.count, reverse=True)
 
-                logger.info("   📂 Stage: %s (%s) → %d candidates", stage_name, stage_id, len(candidates))
-                for c in candidates:
-                    logger.info("      📄 Candidate: %s (%s)", c["name"], c["id"])
+        departments_out.append(DepartmentSummary(name=dept_name, count=dept_total, roles=roles_out))
 
-                stages_out.append(Stage(id=stage_id, name=stage_name, files=candidates))
+    # Sort departments by count DESC
+    departments_out = sorted(departments_out, key=lambda d: d.count, reverse=True)
 
-            if stages_out:
-                roles_out.append(Role(id=role_id, name=role_name, stages=stages_out))
-
-        departments_out.append(Department(id=dept_id, name=dept_name, roles=roles_out))
-
-    return DepartmentsRolesStagesResponse(
-        message="Departments, roles, and stages collected successfully (bulk fetch)",
-        flowsFolderId=DEPARTMENTS_FOLDER_ID,
-        createdRootFolder=False,
-        departments=departments_out,
+    return CandidatesSummaryResponse(
+        message="Candidate summary fetched successfully",
+        total_candidates=len(rows),
+        departments=departments_out
     )
 
 
