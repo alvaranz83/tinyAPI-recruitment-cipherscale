@@ -1762,6 +1762,7 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
 
 # ===== Pydantic models for Candidates summary/fileText =====
 # --- Response Models ---
+
 class CandidateSummary(BaseModel):
     id: int
     full_name: str
@@ -1792,7 +1793,7 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
     require_api_key(request)
 
     rows = await database.fetch_all("""
-        SELECT id, full_name, current_role_name, current_stage_name
+        SELECT id, full_name, current_role_name, current_stage_name, current_department_name
         FROM candidates
     """)
 
@@ -1806,7 +1807,7 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
     # Build hierarchy: Department → Role → Stage → Candidates
     departments_dict: Dict[str, Dict[str, Dict[str, List[dict]]]] = {}
     for row in rows:
-        dept_name = "Unknown Department"  # Placeholder until you normalize departments
+        dept_name = row["current_department_name"] or "Unassigned Department"
         role_name = row["current_role_name"] or "Unknown Role"
         stage_name = row["current_stage_name"] or "Unassigned"
 
@@ -1841,7 +1842,6 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
         total_candidates=total_candidates,
         departments=departments_out
     )
-
 
 
 class FileTextByPromptRequest(BaseModel):
