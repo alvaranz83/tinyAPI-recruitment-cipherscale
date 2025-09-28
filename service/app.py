@@ -35,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],  # or explicitly ["x-api-key", "x-user-email", "content-type", "authorization"]
 )
 
-# DB Related - Dev DB
+## DB Related - Dev DB
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
