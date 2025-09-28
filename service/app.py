@@ -1871,6 +1871,13 @@ class FileTextByPromptRequest(BaseModel):
     prompt: str
     userEmail: Optional[str] = None
 
+class StageFileExtract(BaseModel):
+    id: str
+    name: str
+    mimeType: str
+    text: Optional[str] = None
+    error: Optional[str] = None
+
 class StageFileExtractWithResolution(StageFileExtract):
     matchedRole: Optional[str] = None
     matchedFolder: Optional[str] = None
