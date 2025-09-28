@@ -1794,7 +1794,7 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
     Totals are included for overall, per department, and per role.
     Sorted so busiest pipelines appear first.
     """
-    require_api_key(Request)
+    require_api_key(request)
 
     rows = await database.fetch_all("""
         SELECT 
