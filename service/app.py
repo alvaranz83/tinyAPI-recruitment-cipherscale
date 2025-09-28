@@ -1386,7 +1386,7 @@ class CreateDepartmentsRequest(BaseModel):
     userEmail: Optional[str] = None  # impersonation
 
 @app.post("/departments/create")
-def create_departments(request: Request, body: CreateDepartmentsRequest):
+async def create_departments(request: Request, body: CreateDepartmentsRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
@@ -1412,20 +1412,18 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
     created_root = False
 
     if results.get("files"):
-        # Always pick the one that is directly inside Hiring
         for f in results["files"]:
             if HIRING_FOLDER_ID in f.get("parents", []):
                 departments_folder_id = f["id"]
                 break
 
     if not departments_folder_id:
-        # Create "Departments" folder if not found directly under Hiring
         departments_folder_id = create_folder(drive, "Departments", HIRING_FOLDER_ID)
         created_root = True
 
     created_departments = []
     for dept in body.names:
-        # Check if department folder already exists inside "Departments"
+        # Check if department folder already exists
         query = (
             "mimeType='application/vnd.google-apps.folder' "
             f"and trashed=false and name='{dept}' "
@@ -1439,18 +1437,38 @@ def create_departments(request: Request, body: CreateDepartmentsRequest):
         ).execute()
 
         if existing.get("files"):
-            created_departments.append({
-                "name": dept,
-                "id": existing["files"][0]["id"],
-                "created": False
-            })
+            dept_id = existing["files"][0]["id"]
+            dept_created = False
         else:
             dept_id = create_folder(drive, dept, departments_folder_id)
-            created_departments.append({
-                "name": dept,
-                "id": dept_id,
-                "created": True
-            })
+            dept_created = True
+
+        # ✅ Insert or update department in DB
+        query = """
+            INSERT INTO departments (departmentname, createdbyuser)
+            VALUES (:departmentname, :createdbyuser)
+            ON CONFLICT (departmentname) DO NOTHING
+            RETURNING id
+        """
+        values = {
+            "departmentname": dept,
+            "createdbyuser": subject or "system"
+        }
+        dept_db_id = await database.execute(query=query, values=values)
+
+        # if already exists, fetch its id
+        if not dept_db_id:
+            dept_db_id = await database.fetch_val(
+                "SELECT id FROM departments WHERE departmentname = :departmentname",
+                {"departmentname": dept}
+            )
+
+        created_departments.append({
+            "name": dept,
+            "id": dept_id,
+            "created": dept_created,
+            "db_id": dept_db_id
+        })
 
     return {
         "message": "Departments processed successfully",
