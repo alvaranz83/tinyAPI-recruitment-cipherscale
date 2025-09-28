@@ -1788,7 +1788,7 @@ class CandidatesSummaryResponse(BaseModel):
 
 
 @app.get("/candidates/summary", response_model=CandidatesSummaryResponse)
-async def get_candidates_summary(userEmail: Optional[str] = Query(None)):
+async def get_candidates_summary(request: Request, userEmail: Optional[str] = Query(None)):
     """
     Returns candidate counts grouped by department → role → stage.
     Totals are included for overall, per department, and per role.
