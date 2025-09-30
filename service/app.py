@@ -2397,6 +2397,42 @@ def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
         f"{body.candidateName} - TA/HR Interview Assessment", body.assessmentContent
     )
 
+    # ✅ Persist into DB
+    try:
+        # Find candidate_id from candidates table
+        candidate_id = await database.fetch_val(
+            "SELECT id FROM candidates WHERE full_name = :full_name",
+            {"full_name": body.candidateName}
+        )
+
+        # Insert into tahr_interview_assessments
+        query = """
+            INSERT INTO tahr_interview_assessments (
+                name, score, candidate_id, candidate_full_name,
+                role_id, role_name, created_by_user
+            )
+            VALUES (:name, :score, :candidate_id, :candidate_full_name,
+                    :role_id, :role_name, :created_by_user)
+            RETURNING id
+        """
+
+        values = {
+            "name": f"{body.candidateName} - TA/HR Interview Assessment",
+            "score": None,  # 🔹 TODO: parse score from body.assessmentContent if structured
+            "candidate_id": candidate_id,
+            "candidate_full_name": body.candidateName,
+            "role_id": role_id,
+            "role_name": role_display,
+            "created_by_user": subject or "system"
+        }
+
+        new_id = await database.execute(query=query, values=values)
+        logger.info("✅ Inserted TA/HR assessment into DB with id=%s", new_id)
+
+    except Exception as e:
+        logger.error("❌ Failed to persist TA/HR assessment: %s", e)
+        errors.append(f"DB insert failed: {e}")
+
     return CreateTAHRAssessmentResponse(
         message="TA/HR Interview Assessment saved successfully",
         roleId=role_id,
