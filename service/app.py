@@ -988,7 +988,7 @@ class PositionRequest(BaseModel):
     userEmail: Optional[str] = None  # <-- add this
 
 @app.post("/positions/create")
-def create_position(request: Request, body: PositionRequest):
+async def create_position(request: Request, body: PositionRequest):
     require_api_key(request)
     # prefer body.userEmail; then header/query/env; else SA
     subject = body.userEmail or _extract_subject_from_request(request)
