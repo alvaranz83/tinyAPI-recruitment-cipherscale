@@ -990,7 +990,6 @@ class PositionRequest(BaseModel):
 @app.post("/positions/create")
 async def create_position(request: Request, body: PositionRequest):
     require_api_key(request)
-    # prefer body.userEmail; then header/query/env; else SA
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
@@ -1036,53 +1035,42 @@ async def create_position(request: Request, body: PositionRequest):
         q=query, fields="files(id,name)",
         includeItemsFromAllDrives=True, supportsAllDrives=True
     ).execute()
+
+    created = False
     if results.get("files"):
-        return {
-            "message": f"Role '{name}' already exists in {department}",
-            "positionId": results["files"][0]["id"],
-            "departmentFolderId": department_folder_id,
-            "created": False
-        }
+        position_id = results["files"][0]["id"]
+    else:
+        # Step 2: Create role folder
+        position_id = create_folder(drive, name, department_folder_id)
+        created = True
 
-    # Step 2: Create role folder
-    position_id = create_folder(drive, name, department_folder_id)
+        # Step 3: Ensure default subfolders exist
+        default_subfolders = [
+            "Job Description",
+            "CVs Assessment",
+            "TA/HR Interview Template",
+            "TA/HR Interviews (Assessments)",
+            "1st Technical Interview Template",
+            "1st Technical Interviews (Assessments)",
+            "2nd Technical Interview Template",
+            "2nd Technical Interviews (Assessments)",
+            "Hiring Pipeline"
+        ]
 
-    # Step 3: Ensure default subfolders exist
-    default_subfolders = [
-        "Job Description",
-        "CVs Assessment",
-        "TA/HR Interview Template",
-        "TA/HR Interviews (Assessments)",
-        "1st Technical Interview Template",
-        "1st Technical Interviews (Assessments)",
-        "2nd Technical Interview Template",
-        "2nd Technical Interviews (Assessments)",
-        "Hiring Pipeline"
-    ]
+        for sub in default_subfolders:
+            existing = _find_child_folder_by_name(drive, position_id, sub)
+            if not existing:
+                create_named_subfolder(drive, position_id, sub)
 
-    created_subfolders = []
-    for sub in default_subfolders:
-        existing = _find_child_folder_by_name(drive, position_id, sub)
-        if existing:
-            sub_id = existing["id"]
-            created = False
-        else:
-            sub_id = create_named_subfolder(drive, position_id, sub)
-            created = True
-        created_subfolders.append({"name": sub, "id": sub_id, "created": created})
-
-
-    # ✅ Step 4: Insert into DB
+    # ✅ Step 4: Insert into DB always
     try:
-        # Find department UUID
         dept_uuid = await database.fetch_val(
             "SELECT id FROM departments WHERE drive_id = :drive_id",
             {"drive_id": department_folder_id}
         )
-    
         if not dept_uuid:
             raise HTTPException(404, f"Department '{department}' not found in DB")
-    
+
         query = """
             INSERT INTO roles (
                 drive_id, role_name, department_id, department_name,
@@ -1105,25 +1093,25 @@ async def create_position(request: Request, body: PositionRequest):
             "status": "open"
         }
         role_id = await database.execute(query=query, values=values)
-    
-        # fetch if already exists
+
         if not role_id:
+            # If already exists, fetch its ID
             role_id = await database.fetch_val(
                 "SELECT id FROM roles WHERE drive_id = :drive_id",
                 {"drive_id": position_id}
             )
-    
+
     except Exception as e:
         logger.error(f"❌ Failed to insert role into DB: {e}")
         role_id = None
-        
+
     return {
-        "message": f"Role '{name}' created successfully in {department}",
+        "message": f"Role '{name}' {'created' if created else 'ensured'} successfully in {department}",
         "positionId": position_id,
         "departmentFolderId": department_folder_id,
-        "created": True,
-        "subfolders": created_subfolders
+        "created": created
     }
+
 
 
 @app.get("/positions/list")
