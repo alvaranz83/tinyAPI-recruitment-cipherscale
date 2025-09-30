@@ -2349,7 +2349,7 @@ class CreateTAHRAssessmentResponse(BaseModel):
 
 
 @app.post("/candidates/createTAHRAssessment", response_model=CreateTAHRAssessmentResponse)
-def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
+async def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
@@ -2535,7 +2535,7 @@ class CreateFirstTechInterviewAssessmentResponse(BaseModel):
 
 
 @app.post("/candidates/createFirstTechnicalInterviewAssessment", response_model=CreateFirstTechInterviewAssessmentResponse)
-def create_first_tech_interview_assessment(request: Request, body: CreateFirstTechInterviewAssessmentRequest):
+async def create_first_tech_interview_assessment(request: Request, body: CreateFirstTechInterviewAssessmentRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
