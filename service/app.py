@@ -1071,6 +1071,52 @@ def create_position(request: Request, body: PositionRequest):
             created = True
         created_subfolders.append({"name": sub, "id": sub_id, "created": created})
 
+
+# ✅ Step 4: Insert into DB
+try:
+    # Find department UUID
+    dept_uuid = await database.fetch_val(
+        "SELECT id FROM departments WHERE drive_id = :drive_id",
+        {"drive_id": department_folder_id}
+    )
+
+    if not dept_uuid:
+        raise HTTPException(404, f"Department '{department}' not found in DB")
+
+    query = """
+        INSERT INTO roles (
+            drive_id, role_name, department_id, department_name,
+            created_by, created_at, status
+        )
+        VALUES (
+            :drive_id, :role_name, :department_id, :department_name,
+            :created_by, :created_at, :status
+        )
+        ON CONFLICT (drive_id) DO NOTHING
+        RETURNING id
+    """
+    values = {
+        "drive_id": position_id,
+        "role_name": name,
+        "department_id": dept_uuid,
+        "department_name": department,
+        "created_by": subject or "system",
+        "created_at": datetime.now(timezone.utc),
+        "status": "open"
+    }
+    role_id = await database.execute(query=query, values=values)
+
+    # fetch if already exists
+    if not role_id:
+        role_id = await database.fetch_val(
+            "SELECT id FROM roles WHERE drive_id = :drive_id",
+            {"drive_id": position_id}
+        )
+
+except Exception as e:
+    logger.error(f"❌ Failed to insert role into DB: {e}")
+    role_id = None
+    
     return {
         "message": f"Role '{name}' created successfully in {department}",
         "positionId": position_id,
