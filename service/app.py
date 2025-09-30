@@ -1394,6 +1394,7 @@ class CreateDepartmentsRequest(BaseModel):
     names: List[str]
     userEmail: Optional[str] = None  # impersonation
 
+
 @app.post("/departments/create")
 async def create_departments(request: Request, body: CreateDepartmentsRequest):
     require_api_key(request)
@@ -1452,24 +1453,26 @@ async def create_departments(request: Request, body: CreateDepartmentsRequest):
             dept_id = create_folder(drive, dept, departments_folder_id)
             dept_created = True
 
-        # ✅ Insert or update department in DB
+        # ✅ Insert or update department in DB with drive_id, created_by, created_at
         query = """
-            INSERT INTO departments (departmentname, createdbyuser)
-            VALUES (:departmentname, :createdbyuser)
-            ON CONFLICT (departmentname) DO NOTHING
+            INSERT INTO departments (department_name, drive_id, created_by, created_at)
+            VALUES (:department_name, :drive_id, :created_by, :created_at)
+            ON CONFLICT (department_name) DO NOTHING
             RETURNING id
         """
         values = {
-            "departmentname": dept,
-            "createdbyuser": subject or "system"
+            "department_name": dept,
+            "drive_id": dept_id,
+            "created_by": subject or "system",
+            "created_at": datetime.now(timezone.utc)
         }
         dept_db_id = await database.execute(query=query, values=values)
 
         # if already exists, fetch its id
         if not dept_db_id:
             dept_db_id = await database.fetch_val(
-                "SELECT id FROM departments WHERE departmentname = :departmentname",
-                {"departmentname": dept}
+                "SELECT id FROM departments WHERE department_name = :department_name",
+                {"department_name": dept}
             )
 
         created_departments.append({
@@ -1485,6 +1488,7 @@ async def create_departments(request: Request, body: CreateDepartmentsRequest):
         "createdRootFolder": created_root,
         "departments": created_departments
     }
+
 
 
 class HiringFlow(BaseModel):
