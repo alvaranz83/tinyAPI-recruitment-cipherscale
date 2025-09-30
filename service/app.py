@@ -2586,6 +2586,45 @@ def create_first_tech_interview_assessment(request: Request, body: CreateFirstTe
         f"{body.candidateName} - 1st Technical Interview Assessment", body.assessmentContent
     )
 
+
+    # ✅ Persist into DB
+    try:
+        # Find candidate_id from candidates table
+        candidate_id = await database.fetch_val(
+            "SELECT id FROM candidates WHERE full_name = :full_name",
+            {"full_name": body.candidateName}
+        )
+
+        query = """
+            INSERT INTO first_tech_interview_assessments (
+                name, score, candidate_id, candidate_full_name,
+                role_id, role_name, created_by_user, template_url
+            )
+            VALUES (:name, :score, :candidate_id, :candidate_full_name,
+                    :role_id, :role_name, :created_by_user, :template_url)
+            RETURNING id
+        """
+
+        values = {
+            "name": f"{body.candidateName} - 1st Technical Interview Assessment",
+            "score": None,  # 🔹 TODO: extract score from body.assessmentContent if structured
+            "candidate_id": candidate_id,
+            "candidate_full_name": body.candidateName,
+            "role_id": role_id,
+            "role_name": role_display,
+            "created_by_user": subject or "system",
+            "template_url": created_docs["assessment"]  # Google Doc link
+        }
+
+        new_id = await database.execute(query=query, values=values)
+        logger.info("✅ Inserted 1st Technical Interview assessment into DB with id=%s", new_id)
+
+    except Exception as e:
+        logger.error("❌ Failed to persist 1st Tech Interview assessment: %s", e)
+        errors.append(f"DB insert failed: {e}")
+
+
+    
     return CreateFirstTechInterviewAssessmentResponse(
         message="1st Technical Interview Assessment saved successfully",
         roleId=role_id,
