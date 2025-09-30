@@ -1213,7 +1213,7 @@ class CreateJDRequest(BaseModel):
     userEmail: Optional[str] = None  # <-- add this
 
 @app.post("/positions/createJD")
-def create_jd(request: Request, body: CreateJDRequest):
+async def create_jd(request: Request, body: CreateJDRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
