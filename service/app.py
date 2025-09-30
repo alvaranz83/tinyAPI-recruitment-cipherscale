@@ -2408,10 +2408,10 @@ async def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentReq
         # Insert into tahr_interview_assessments
         query = """
             INSERT INTO tahr_interview_assessments (
-                name, score, candidate_id, candidate_full_name,
+                name, score, candidate_id, candidate_name,
                 role_id, role_name, created_by_user
             )
-            VALUES (:name, :score, :candidate_id, :candidate_full_name,
+            VALUES (:name, :score, :candidate_id, :candidate_name,
                     :role_id, :role_name, :created_by_user)
             RETURNING id
         """
@@ -2420,7 +2420,7 @@ async def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentReq
             "name": f"{body.candidateName} - TA/HR Interview Assessment",
             "score": None,  # 🔹 TODO: parse score from body.assessmentContent if structured
             "candidate_id": candidate_id,
-            "candidate_full_name": body.candidateName,
+            "candidate_name": body.candidateName,
             "role_id": role_id,
             "role_name": role_display,
             "created_by_user": subject or "system"
