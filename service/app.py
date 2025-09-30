@@ -1074,11 +1074,11 @@ async def create_position(request: Request, body: PositionRequest):
         query = """
             INSERT INTO roles (
                 drive_id, role_name, department_id, department_name,
-                created_by, created_at, status
+                created_by, created_at, status, job_description_url
             )
             VALUES (
                 :drive_id, :role_name, :department_id, :department_name,
-                :created_by, :created_at, :status
+                :created_by, :created_at, :status, :job_description_url
             )
             ON CONFLICT (drive_id) DO NOTHING
             RETURNING id
@@ -1090,8 +1090,10 @@ async def create_position(request: Request, body: PositionRequest):
             "department_name": department,
             "created_by": subject or "system",
             "created_at": datetime.now(timezone.utc),
-            "status": "open"
+            "status": "open",
+            "job_description_url": None  # JD created later
         }
+
         role_id = await database.execute(query=query, values=values)
 
         if not role_id:
@@ -1255,12 +1257,27 @@ def create_jd(request: Request, body: CreateJDRequest):
         """
 
     file_id = create_google_doc(docs, drive, jd_folder_id, f"JD - {body.roleName}", content)
+    doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
+    # ✅ Update the role with JD link
+    try:
+        await database.execute(
+            """
+            UPDATE roles
+            SET job_description_url = :doc_link
+            WHERE drive_id = :position_id
+            """,
+            {"doc_link": doc_link, "position_id": body.positionId}
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to update job_description_url: {e}")
+    
     return {
-        "message": f"JD created for {body.roleName}",
-        "fileId": file_id,
-        "folderId": jd_folder_id,
-        "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
-    }
+    "message": f"JD created for {body.roleName}",
+    "fileId": file_id,
+    "folderId": jd_folder_id,
+    "docLink": doc_link
+}
+
 
 class CreateScreeningRequest(BaseModel):
     positionId: str
