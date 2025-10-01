@@ -1373,7 +1373,7 @@ class CreateFirstTechInterviewRequest(BaseModel):
 
 
 @app.post("/candidates/createFirstTechnicalInterview")
-def create_first_tech_interview(request: Request, body: CreateFirstTechInterviewRequest):
+async def create_first_tech_interview(request: Request, body: CreateFirstTechInterviewRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
@@ -1392,7 +1392,7 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
     else:
         tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
 
-    # ✅ Check if the candidate's interview doc already exists
+    # ✅ Check if the candidate's template already exists
     query = (
         "mimeType='application/vnd.google-apps.document' "
         "and trashed=false "
@@ -1406,62 +1406,77 @@ def create_first_tech_interview(request: Request, body: CreateFirstTechInterview
         supportsAllDrives=True
     ).execute()
 
+    created = False
     if results.get("files"):
         existing = results["files"][0]
-        return {
-            "message": f"1st Technical Interview doc already exists for {body.candidateName}",
-            "fileId": existing["id"],
-            "folderId": screening_folder_id,
-            "docLink": f"https://docs.google.com/document/d/{existing['id']}/edit",
-            "created": False
-        }
+        file_id = existing["id"]
+        file_name = existing["name"]
+    else:
+        # ✅ Default polished template
+        content = body.content or f"""
+            1st Technical Interview – {body.candidateName}
 
-    # ✅ Default polished template
-    content = body.content or f"""
-        1st Technical Interview – {body.candidateName}
+            Candidate: {body.candidateName}
+            Role: [Specify Role Here]
+            Date: ___________________________
+            Interviewer(s): ___________________________
 
-        Candidate: {body.candidateName}
-        Role: [Specify Role Here]
-        Date: ___________________________
-        Interviewer(s): ___________________________
+            Technical Questions:
+            - Q1: ______________________________________
+            - Q2: ______________________________________
+            - Q3: ______________________________________
+            - Q4: ______________________________________
+            - Q5: ______________________________________
 
-        Technical Questions:
-        - Q1: ______________________________________
-        - Q2: ______________________________________
-        - Q3: ______________________________________
-        - Q4: ______________________________________
-        - Q5: ______________________________________
+            Feedback:
+            - Strengths:
+            ____________________________________________
 
-        Feedback:
-        - Strengths:
-        ____________________________________________
+            - Weaknesses:
+            ____________________________________________
 
-        - Weaknesses:
-        ____________________________________________
+            Scorecard (1–5 for each dimension):
+            - Technical Knowledge: ___
+            - Problem Solving: ___
+            - Communication: ___
+            - Culture Fit: ___
 
-        Scorecard (1–5 for each dimension):
-        - Technical Knowledge: ___
-        - Problem Solving: ___
-        - Communication: ___
-        - Culture Fit: ___
+            Overall Recommendation:
+            - Strong Hire / Hire / Neutral / No Hire
+        """
 
-        Overall Recommendation:
-        - Strong Hire / Hire / Neutral / No Hire
-    """
+        file_name = f"{body.candidateName} - 1st Technical Interview"
+        file_id = create_google_doc(docs, drive, screening_folder_id, file_name, content)
+        created = True
 
-    # ✅ Create doc inside Screening Templates
-    file_id = create_google_doc(
-        docs, drive, screening_folder_id,
-        f"{body.candidateName} - 1st Technical Interview",
-        content
-    )
+    doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
+
+    # ✅ Persist template record into DB (in first_tech_interview_templates)
+    try:
+        await database.execute(
+            """
+            INSERT INTO first_tech_interview_templates 
+                (template_name, created_by_user, created_at, template_url, drive_id)
+            VALUES (:template_name, :created_by_user, :created_at, :template_url, :drive_id)
+            ON CONFLICT (drive_id) DO NOTHING
+            """,
+            {
+                "template_name": file_name,
+                "created_by_user": subject or "system",
+                "created_at": datetime.now(timezone.utc),
+                "template_url": doc_link,
+                "drive_id": file_id
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to persist 1st Technical Interview Template: {e}")
 
     return {
-        "message": f"1st Technical Interview doc created for {body.candidateName}",
+        "message": f"1st Technical Interview template {'created' if created else 'already existed'} for {body.candidateName}",
         "fileId": file_id,
         "folderId": screening_folder_id,
-        "docLink": f"https://docs.google.com/document/d/{file_id}/edit",
-        "created": True
+        "docLink": doc_link,
+        "created": created
     }
 
 
