@@ -1207,10 +1207,11 @@ def list_positions(request: Request, department: Optional[str] = None):
 
 
 class CreateJDRequest(BaseModel):
-    positionId: str
+    positionId: str           # Google Drive folder ID of the role
     roleName: str
     content: Optional[str] = None
-    userEmail: Optional[str] = None  # <-- add this
+    userEmail: Optional[str] = None  # for impersonation
+
 
 @app.post("/positions/createJD")
 async def create_jd(request: Request, body: CreateJDRequest):
@@ -1218,102 +1219,99 @@ async def create_jd(request: Request, body: CreateJDRequest):
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
 
-    # ✅ Check if JD doc already exists
-    query = (
-        "mimeType='application/vnd.google-apps.document' "
-        "and trashed=false "
-        f"and name='{body.roleName} - Job Description' "
-        f"and '{body.positionId}' in parents"
-    )
-    results = drive.files().list(
-        q=query,
-        fields="files(id,name)",
-        includeItemsFromAllDrives=True,
-        supportsAllDrives=True
-    ).execute()
-
-    created = False
-    if results.get("files"):
-        existing = results["files"][0]
-        file_id = existing["id"]
-        file_name = existing["name"]
+    # ✅ Ensure Job Description folder exists
+    jd_folder = _find_child_folder_by_name(drive, body.positionId, "Job Description")
+    if jd_folder:
+        jd_folder_id = jd_folder["id"]
     else:
-        # ✅ Default JD content if none provided
-        content = body.content or f"""
-            Job Description – {body.roleName}
+        jd_folder_id = create_named_subfolder(drive, body.positionId, "Job Description")
 
-            Company: CipherScale
-            Role: {body.roleName}
-            Location: Remote/Hybrid
-            Reports to: Hiring Manager
+    # ✅ Ensure CVs Assessment folder exists (future usage)
+    cv_assessment_folder = _find_child_folder_by_name(drive, body.positionId, "CVs Assessment")
+    if cv_assessment_folder:
+        cv_assessment_folder_id = cv_assessment_folder["id"]
+    else:
+        cv_assessment_folder_id = create_named_subfolder(drive, body.positionId, "CVs Assessment")
 
-            About the Role:
-            [Fill in details here]
+    # ✅ Default polished template
+    content = body.content or f"""
+        Job Description – {body.roleName}
+        
+        Role Summary:
+        We are seeking a strategic and results-oriented {body.roleName} to drive our initiatives and ensure measurable business impact. 
+        This role requires strong leadership, cross-functional collaboration, and a proven ability to deliver results in fast-paced environments.
+        
+        Key Responsibilities:
+        - Develop and execute the company’s {body.roleName} strategy.
+        - Collaborate with Product, Sales, and Engineering teams to align goals.
+        - Lead and mentor a high-performing team to deliver against objectives.
+        - Define, measure, and report on KPIs such as ROI, retention, and conversion.
+        - Partner with leadership to shape the company’s strategic direction.
+        
+        Requirements:
+        - 7+ years of professional experience, including at least 3 years in a leadership role.
+        - Proven success in executing scalable strategies in dynamic environments.
+        - Strong analytical and decision-making skills, with attention to detail.
+        - Excellent communication, presentation, and stakeholder management abilities.
+    """
 
-            Responsibilities:
-            - Responsibility 1
-            - Responsibility 2
-
-            Required Qualifications:
-            - Skill 1
-            - Skill 2
-
-            Nice to Have:
-            - Optional 1
-            - Optional 2
-
-            What We Offer:
-            - Competitive salary
-            - Remote-friendly culture
-            - Learning & Development
-        """
-
-        file_name = f"{body.roleName} - Job Description"
-        file_id = create_google_doc(docs, drive, body.positionId, file_name, content)
-        created = True
-
+    # ✅ Create Google Doc
+    file_id = create_google_doc(docs, drive, jd_folder_id, f"JD - {body.roleName}", content)
     doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
 
-    # ✅ Insert record into job_descriptions table
     try:
+        # ✅ Fetch the Role UUID from DB
+        role_uuid = await database.fetch_val(
+            "SELECT id FROM roles WHERE drive_id = :drive_id",
+            {"drive_id": body.positionId}
+        )
+        if not role_uuid:
+            raise HTTPException(404, f"No role found in DB with drive_id={body.positionId}")
+
+        # ✅ Insert into job_descriptions table
         jd_id = await database.execute(
             """
-            INSERT INTO job_descriptions
-                (template_name, template_url, drive_id, created_by, created_at, role_name, role)
-            VALUES (:template_name, :template_url, :drive_id, :created_by, :created_at, :role_name, :role)
-            ON CONFLICT (drive_id) DO NOTHING
+            INSERT INTO job_descriptions (
+                template_name, template_url, drive_id,
+                created_by, created_at, role_name, role
+            )
+            VALUES (:template_name, :template_url, :drive_id,
+                    :created_by, :created_at, :role_name, :role)
             RETURNING id
             """,
             {
-                "template_name": file_name,
+                "template_name": f"JD - {body.roleName}",
                 "template_url": doc_link,
-                "drive_id": file_id,
+                "drive_id": file_id,              # Google Drive File ID (TEXT)
                 "created_by": subject or "system",
                 "created_at": datetime.now(timezone.utc),
                 "role_name": body.roleName,
-                "role": body.positionId  # assuming this maps to roles.id (UUID)
+                "role": role_uuid                 # UUID from roles table ✅
             }
         )
 
-        # ✅ Update Roles table with JD URL
+        # ✅ Update roles table with JD link
         await database.execute(
             """
             UPDATE roles
-            SET job_description_url = :jd_url
+            SET job_description_url = :doc_link
             WHERE id = :role_id
             """,
-            {"jd_url": doc_link, "role_id": body.positionId}
+            {"doc_link": doc_link, "role_id": role_uuid}
         )
 
     except Exception as e:
         logger.error(f"❌ Failed to persist Job Description or update Role: {e}")
+        raise HTTPException(500, f"Failed to persist JD or update role: {e}")
 
     return {
-        "message": f"Job Description {'created' if created else 'already existed'} for {body.roleName}",
+        "message": f"JD created for {body.roleName}",
         "fileId": file_id,
+        "folderId": jd_folder_id,
         "docLink": doc_link,
-        "created": created
+        "jobDescriptionId": jd_id
     }
+
 
 
 
