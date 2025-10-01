@@ -1505,23 +1505,24 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
             }
         )
     
-        # ✅ Resolve role UUID from DB
+        # ✅ Resolve role UUID
         role_uuid = await database.fetch_val(
             "SELECT id FROM roles WHERE drive_id = :drive_id",
             {"drive_id": body.positionId}
         )
         if not role_uuid:
             raise HTTPException(404, f"No role found in DB with drive_id={body.positionId}")
-    
-        # ✅ Update roles table with template_url
+        
+        # ✅ Update roles table with first technical interview template URL
         await database.execute(
             """
             UPDATE roles
-            SET template_url = :template_url
+            SET first_tech_interview_template = :template_url
             WHERE id = :id
             """,
             {"template_url": doc_link, "id": role_uuid}
         )
+
 
     except Exception as e:
         logger.error(f"❌ Failed to persist 1st Technical Interview Template or update role: {e}")
