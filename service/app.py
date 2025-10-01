@@ -1402,7 +1402,7 @@ async def create_screening(request: Request, body: CreateScreeningRequest):
 
 
 class CreateFirstTechInterviewRequest(BaseModel):
-    positionId: str
+    positionId: str          # Google Drive folder ID of the role
     candidateName: str
     content: Optional[str] = None
     userEmail: Optional[str] = None  # for impersonation
@@ -1428,7 +1428,7 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
     else:
         tech_assessment_folder_id = create_named_subfolder(drive, body.positionId, "1st Technical Interviews (Assessments)")
 
-    # ✅ Check if the candidate's template already exists
+    # ✅ Check if the template already exists
     query = (
         "mimeType='application/vnd.google-apps.document' "
         "and trashed=false "
@@ -1487,8 +1487,9 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
 
     doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
 
-    # ✅ Persist template record into DB (in first_tech_interview_templates)
+    # ✅ Persist template record into DB and update role
     try:
+        # Insert into first_tech_interview_templates
         await database.execute(
             """
             INSERT INTO first_tech_interview_templates 
@@ -1505,18 +1506,27 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
             }
         )
 
-        # ✅ Also update roles table with template_url for this role
+        # Fetch role UUID
+        role_uuid = await database.fetch_val(
+            "SELECT id FROM roles WHERE drive_id = :drive_id",
+            {"drive_id": body.positionId}
+        )
+        if not role_uuid:
+            raise HTTPException(404, f"No role found in DB with drive_id={body.positionId}")
+
+        # Update roles table with template_url
         await database.execute(
             """
             UPDATE roles
             SET template_url = :template_url
-            WHERE drive_id = :role_drive_id
+            WHERE id = :id
             """,
-            {"template_url": doc_link, "role_drive_id": body.positionId}
+            {"template_url": doc_link, "id": role_uuid}
         )
 
     except Exception as e:
         logger.error(f"❌ Failed to persist 1st Technical Interview Template or update role: {e}")
+        raise HTTPException(500, f"DB insert/update failed: {e}")
 
     return {
         "message": f"1st Technical Interview template {'created' if created else 'already existed'} for {body.candidateName}",
@@ -1525,6 +1535,7 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
         "docLink": doc_link,
         "created": created
     }
+
 
 
 class CreateDepartmentsRequest(BaseModel):
