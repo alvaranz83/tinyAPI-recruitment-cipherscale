@@ -1487,34 +1487,33 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
 
     doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
 
-    # ✅ Persist template record into DB and update role
+    # ✅ Persist template record into DB (in first_tech_interview_templates)
     try:
-        # Insert into first_tech_interview_templates
         await database.execute(
             """
             INSERT INTO first_tech_interview_templates 
-                (template_name, created_by_user, created_at, template_url, drive_id)
-            VALUES (:template_name, :created_by_user, :created_at, :template_url, :drive_id)
+                (template_name, created_by, created_at, template_url, drive_id)
+            VALUES (:template_name, :created_by, :created_at, :template_url, :drive_id)
             ON CONFLICT (drive_id) DO NOTHING
             """,
             {
                 "template_name": file_name,
-                "created_by_user": subject or "system",
+                "created_by": subject or "system",   # ✅ fixed column name
                 "created_at": datetime.now(timezone.utc),
                 "template_url": doc_link,
                 "drive_id": file_id
             }
         )
-
-        # Fetch role UUID
+    
+        # ✅ Resolve role UUID from DB
         role_uuid = await database.fetch_val(
             "SELECT id FROM roles WHERE drive_id = :drive_id",
             {"drive_id": body.positionId}
         )
         if not role_uuid:
             raise HTTPException(404, f"No role found in DB with drive_id={body.positionId}")
-
-        # Update roles table with template_url
+    
+        # ✅ Update roles table with template_url
         await database.execute(
             """
             UPDATE roles
@@ -1527,6 +1526,7 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
     except Exception as e:
         logger.error(f"❌ Failed to persist 1st Technical Interview Template or update role: {e}")
         raise HTTPException(500, f"DB insert/update failed: {e}")
+
 
     return {
         "message": f"1st Technical Interview template {'created' if created else 'already existed'} for {body.candidateName}",
