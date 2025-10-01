@@ -1286,7 +1286,7 @@ class CreateScreeningRequest(BaseModel):
     userEmail: Optional[str] = None  # for impersonation
 
 @app.post("/positions/createScreeningTemplate")
-def create_screening(request: Request, body: CreateScreeningRequest):
+async def create_screening(request: Request, body: CreateScreeningRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
@@ -1329,15 +1329,39 @@ def create_screening(request: Request, body: CreateScreeningRequest):
         - Progress to next stage
         - Hold for review
         - Reject
-        
-                """
+    """
 
-    file_id = create_google_doc(docs, drive, screening_folder_id, f"Screening Template - {body.roleName}", content)
+    # ✅ Create Google Doc
+    file_id = create_google_doc(
+        docs, drive, screening_folder_id,
+        f"Screening Template - {body.roleName}", content
+    )
+    doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
+
+    # ✅ Persist into DB with conflict handling
+    try:
+        await database.execute(
+            """
+            INSERT INTO ta_hr_interview_templates (drive_id, template_name, created_by, template_url, created_at)
+            VALUES (:drive_id, :template_name, :created_by, :template_url, :created_at)
+            ON CONFLICT (drive_id) DO NOTHING
+            """,
+            {
+                "drive_id": file_id,
+                "template_name": f"Screening Template - {body.roleName}",
+                "created_by": subject or "system",
+                "template_url": doc_link,
+                "created_at": datetime.now(timezone.utc)
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to persist TA/HR Interview Template: {e}")
+
     return {
         "message": f"Screening template created for {body.roleName}",
         "fileId": file_id,
         "folderId": screening_folder_id,
-        "docLink": f"https://docs.google.com/document/d/{file_id}/edit"
+        "docLink": doc_link
     }
 
 
