@@ -1468,8 +1468,19 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
                 "drive_id": file_id
             }
         )
+
+        # ✅ Also update roles table with template_url for this role
+        await database.execute(
+            """
+            UPDATE roles
+            SET template_url = :template_url
+            WHERE drive_id = :role_drive_id
+            """,
+            {"template_url": doc_link, "role_drive_id": body.positionId}
+        )
+
     except Exception as e:
-        logger.error(f"❌ Failed to persist 1st Technical Interview Template: {e}")
+        logger.error(f"❌ Failed to persist 1st Technical Interview Template or update role: {e}")
 
     return {
         "message": f"1st Technical Interview template {'created' if created else 'already existed'} for {body.candidateName}",
