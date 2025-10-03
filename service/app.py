@@ -3044,7 +3044,6 @@ class CreateSecondTechInterviewRequest(BaseModel):
     content: Optional[str] = None
     userEmail: Optional[str] = None  # for impersonation
 
-
 @app.post("/candidates/createSecondTechnicalInterview")
 async def create_second_tech_interview(request: Request, body: CreateSecondTechInterviewRequest):
     require_api_key(request)
@@ -3079,95 +3078,97 @@ async def create_second_tech_interview(request: Request, body: CreateSecondTechI
         supportsAllDrives=True
     ).execute()
 
+    created = False
     if results.get("files"):
         existing = results["files"][0]
-        return {
-            "message": f"2nd Technical Interview doc already exists for {body.candidateName}",
-            "fileId": existing["id"],
-            "folderId": screening_folder_id,
-            "docLink": f"https://docs.google.com/document/d/{existing['id']}/edit",
-            "created": False
-        }
+        file_id = existing["id"]
+        file_name = existing["name"]
+    else:
+        # ✅ Default polished template
+        content = body.content or f"""
+            2nd Technical Interview – {body.candidateName}
 
-    # ✅ Default polished template
-    content = body.content or f"""
-        2nd Technical Interview – {body.candidateName}
+            Candidate: {body.candidateName}
+            Role: [Specify Role Here]
+            Date: ___________________________
+            Interviewer(s): ___________________________
 
-        Candidate: {body.candidateName}
-        Role: [Specify Role Here]
-        Date: ___________________________
-        Interviewer(s): ___________________________
+            Advanced Technical Questions:
+            - Q1: ______________________________________
+            - Q2: ______________________________________
+            - Q3: ______________________________________
+            - Q4: ______________________________________
+            - Q5: ______________________________________
 
-        Advanced Technical Questions:
-        - Q1: ______________________________________
-        - Q2: ______________________________________
-        - Q3: ______________________________________
-        - Q4: ______________________________________
-        - Q5: ______________________________________
+            Feedback:
+            - Strengths:
+            ____________________________________________
 
-        Feedback:
-        - Strengths:
-        ____________________________________________
+            - Areas for Improvement:
+            ____________________________________________
 
-        - Areas for Improvement:
-        ____________________________________________
+            Scorecard (1–5 for each dimension):
+            - System Design / Architecture: ___
+            - Code Quality / Best Practices: ___
+            - Problem Solving: ___
+            - Collaboration & Communication: ___
+            - Culture Fit: ___
 
-        Scorecard (1–5 for each dimension):
-        - System Design / Architecture: ___
-        - Code Quality / Best Practices: ___
-        - Problem Solving: ___
-        - Collaboration & Communication: ___
-        - Culture Fit: ___
+            Overall Recommendation:
+            - Strong Hire / Hire / Neutral / No Hire
+        """
 
-        Overall Recommendation:
-        - Strong Hire / Hire / Neutral / No Hire
-    """
+        file_name = f"{body.candidateName} - 2nd Technical Interview"
+        file_id = create_google_doc(docs, drive, screening_folder_id, file_name, content)
+        created = True
 
-    # ✅ Create doc inside 2nd Technical Interview Template
-    file_id = create_google_doc(
-        docs, drive, screening_folder_id,
-        f"{body.candidateName} - 2nd Technical Interview",
-        content
-    )
     doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
 
-    # ✅ Persist into DB: second_tech_interview_templates
-    await database.execute(
-        """
-        INSERT INTO second_tech_interview_templates (drive_id, template_name, created_by, template_url, created_at)
-        VALUES (:drive_id, :template_name, :created_by, :template_url, :created_at)
-        ON CONFLICT (drive_id) DO NOTHING
-        """,
-        {
-            "drive_id": file_id,
-            "template_name": f"2nd Technical Interview - {body.candidateName}",
-            "created_by": subject or "system",
-            "template_url": doc_link,
-            "created_at": datetime.now(timezone.utc)
-        }
-    )
+    # ✅ Persist into second_tech_interview_templates table
+    try:
+        await database.execute(
+            """
+            INSERT INTO second_tech_interview_templates (
+                template_name, role_name, created_by, template_url, created_at, drive_id
+            )
+            VALUES (:template_name, :role_name, :created_by, :template_url, :created_at, :drive_id)
+            ON CONFLICT (drive_id) DO NOTHING
+            """,
+            {
+                "template_name": file_name,
+                "role_name": "[Specify Role Here]",  # You can resolve role name from roles table if needed
+                "created_by": subject or "system",
+                "template_url": doc_link,
+                "created_at": datetime.now(timezone.utc),
+                "drive_id": file_id
+            }
+        )
 
-    # ✅ Update the corresponding role
-    await database.execute(
-        """
-        UPDATE roles
-        SET second_tech_interview_template_url = :template_url,
-            updated_at = :updated_at
-        WHERE drive_id = :position_id
-        """,
-        {
-            "template_url": doc_link,
-            "updated_at": datetime.now(timezone.utc),
-            "position_id": body.positionId
-        }
-    )
+        # ✅ Update roles table with second tech interview template link
+        role_uuid = await database.fetch_val(
+            "SELECT id FROM roles WHERE drive_id = :drive_id",
+            {"drive_id": body.positionId}
+        )
+        if role_uuid:
+            await database.execute(
+                """
+                UPDATE roles
+                SET second_tech_interview_template_url = :template_url
+                WHERE id = :id
+                """,
+                {"template_url": doc_link, "id": role_uuid}
+            )
+
+    except Exception as e:
+        logger.error(f"❌ Failed to persist 2nd Technical Interview Template or update role: {e}")
+        raise HTTPException(500, f"DB insert/update failed: {e}")
 
     return {
-        "message": f"2nd Technical Interview doc created for {body.candidateName}",
+        "message": f"2nd Technical Interview template {'created' if created else 'already existed'} for {body.candidateName}",
         "fileId": file_id,
         "folderId": screening_folder_id,
         "docLink": doc_link,
-        "created": True
+        "created": created
     }
 
 
