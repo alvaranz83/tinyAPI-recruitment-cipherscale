@@ -1517,7 +1517,7 @@ async def create_first_tech_interview(request: Request, body: CreateFirstTechInt
         await database.execute(
             """
             UPDATE roles
-            SET first_tech_interview_template = :template_url
+            SET first_tech_interview_template_url = :template_url
             WHERE id = :id
             """,
             {"template_url": doc_link, "id": role_uuid}
