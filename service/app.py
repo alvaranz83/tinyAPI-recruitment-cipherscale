@@ -3046,7 +3046,7 @@ class CreateSecondTechInterviewRequest(BaseModel):
 
 
 @app.post("/candidates/createSecondTechnicalInterview")
-def create_second_tech_interview(request: Request, body: CreateSecondTechInterviewRequest):
+async def create_second_tech_interview(request: Request, body: CreateSecondTechInterviewRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
@@ -3129,12 +3129,44 @@ def create_second_tech_interview(request: Request, body: CreateSecondTechIntervi
         f"{body.candidateName} - 2nd Technical Interview",
         content
     )
+    doc_link = f"https://docs.google.com/document/d/{file_id}/edit"
+
+    # ✅ Persist into DB: second_tech_interview_templates
+    await database.execute(
+        """
+        INSERT INTO second_tech_interview_templates (drive_id, template_name, created_by, template_url, created_at)
+        VALUES (:drive_id, :template_name, :created_by, :template_url, :created_at)
+        ON CONFLICT (drive_id) DO NOTHING
+        """,
+        {
+            "drive_id": file_id,
+            "template_name": f"2nd Technical Interview - {body.candidateName}",
+            "created_by": subject or "system",
+            "template_url": doc_link,
+            "created_at": datetime.now(timezone.utc)
+        }
+    )
+
+    # ✅ Update the corresponding role
+    await database.execute(
+        """
+        UPDATE roles
+        SET second_tech_interview_template_url = :template_url,
+            updated_at = :updated_at
+        WHERE drive_id = :position_id
+        """,
+        {
+            "template_url": doc_link,
+            "updated_at": datetime.now(timezone.utc),
+            "position_id": body.positionId
+        }
+    )
 
     return {
         "message": f"2nd Technical Interview doc created for {body.candidateName}",
         "fileId": file_id,
         "folderId": screening_folder_id,
-        "docLink": f"https://docs.google.com/document/d/{file_id}/edit",
+        "docLink": doc_link,
         "created": True
     }
 
