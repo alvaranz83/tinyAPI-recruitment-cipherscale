@@ -1390,6 +1390,22 @@ async def create_screening(request: Request, body: CreateScreeningRequest):
                 "created_at": datetime.now(timezone.utc)
             }
         )
+
+        # 🔥 New part: also update the corresponding role
+        await database.execute(
+            """
+            UPDATE roles
+            SET ta_hr_interview_template_url = :template_url,
+                updated_at = :updated_at
+            WHERE drive_id = :position_id
+            """,
+            {
+                "template_url": doc_link,
+                "updated_at": datetime.now(timezone.utc),
+                "position_id": body.positionId
+            }
+        )
+    
     except Exception as e:
         logger.error(f"❌ Failed to persist TA/HR Interview Template: {e}")
 
