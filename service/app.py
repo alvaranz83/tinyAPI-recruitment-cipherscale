@@ -2765,31 +2765,34 @@ async def create_first_tech_interview_assessment(request: Request, body: CreateF
             "SELECT id FROM candidates WHERE full_name = :full_name",
             {"full_name": body.candidateName}
         )
-
+    
+        # Insert into first_tech_interview_assessments
         query = """
             INSERT INTO first_tech_interview_assessments (
-                name, score, candidate_id, candidate_full_name,
-                role_id, role_name, created_by_user, template_url
+                template_name, drive_id, candidate_name, candidate,
+                score, role_name, department_name, created_by, created_at
             )
-            VALUES (:name, :score, :candidate_id, :candidate_full_name,
-                    :role_id, :role_name, :created_by_user, :template_url)
+            VALUES (
+                :template_name, :drive_id, :candidate_name, :candidate,
+                :score, :role_name, :department_name, :created_by, NOW()
+            )
             RETURNING id
         """
-
+    
         values = {
-            "name": f"{body.candidateName} - 1st Technical Interview Assessment",
-            "score": None,  # 🔹 TODO: extract score from body.assessmentContent if structured
-            "candidate_id": candidate_id,
-            "candidate_full_name": body.candidateName,
-            "role_id": role_id,
+            "template_name": f"{body.candidateName} - 1st Technical Interview Assessment",
+            "drive_id": created_docs.get("assessment").split("/d/")[1].split("/")[0] if created_docs.get("assessment") else None,
+            "candidate_name": body.candidateName,
+            "candidate": candidate_id,
+            "score": None,  # You can parse actual score from body.assessmentContent later
             "role_name": role_display,
-            "created_by_user": subject or "system",
-            "template_url": created_docs["assessment"]  # Google Doc link
+            "department_name": None,  # Optional — can fetch from roles table if needed
+            "created_by": subject or "system"
         }
-
+    
         new_id = await database.execute(query=query, values=values)
         logger.info("✅ Inserted 1st Technical Interview assessment into DB with id=%s", new_id)
-
+    
     except Exception as e:
         logger.error("❌ Failed to persist 1st Tech Interview assessment: %s", e)
         errors.append(f"DB insert failed: {e}")
