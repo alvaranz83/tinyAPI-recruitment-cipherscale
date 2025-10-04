@@ -3311,6 +3311,52 @@ def create_second_tech_interview_assessment(request: Request, body: CreateSecond
         f"{body.candidateName} - 2nd Technical Interview Assessment", body.assessmentContent
     )
 
+    # ✅ Persist into PostgreSQL
+    try:
+        # 1️⃣ Find candidate_id from candidates table
+        candidate_id = await database.fetch_val(
+            "SELECT id FROM candidates WHERE full_name = :full_name",
+            {"full_name": body.candidateName}
+        )
+
+        # 2️⃣ Extract Drive file ID (if available)
+        drive_id = None
+        if created_docs.get("assessment") and "docs.google.com/document/d/" in created_docs["assessment"]:
+            drive_id = created_docs["assessment"].split("/d/")[1].split("/")[0]
+
+        # 3️⃣ Build SQL insert aligned with schema
+        query = """
+            INSERT INTO first_tech_interview_assessments (
+                template_name, drive_id, candidate_name, candidate,
+                score, role_name, department_name, created_by, created_at
+            )
+            VALUES (
+                :template_name, :drive_id, :candidate_name, :candidate,
+                :score, :role_name, :department_name, :created_by, NOW()
+            )
+            RETURNING id
+        """
+
+        # 4️⃣ Build values dict
+        values = {
+            "template_name": f"{body.candidateName} - 2nd Technical Interview Assessment",
+            "drive_id": drive_id,
+            "candidate_name": body.candidateName,
+            "candidate": candidate_id,
+            "score": None,  # Optional: parse from body.assessmentContent if structured
+            "role_name": role_display,
+            "department_name": None,  # Optional: fetch from roles if desired
+            "created_by": subject or "system",
+        }
+
+        # 5️⃣ Execute DB insert
+        new_id = await database.execute(query=query, values=values)
+        logger.info("✅ Inserted 2nd Technical Interview assessment into DB with id=%s", new_id)
+
+    except Exception as e:
+        logger.error("❌ Failed to persist 2nd Technical Interview assessment: %s", e)
+        errors.append(f"DB insert failed: {e}")
+
     return CreateSecondTechInterviewAssessmentResponse(
         message="2nd Technical Interview Assessment saved successfully",
         roleId=role_id,
