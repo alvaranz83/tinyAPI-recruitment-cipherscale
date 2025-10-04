@@ -2571,34 +2571,38 @@ async def create_tahr_assessment(request: Request, body: CreateTAHRAssessmentReq
             "SELECT id FROM candidates WHERE full_name = :full_name",
             {"full_name": body.candidateName}
         )
-
-        # Insert into tahr_interview_assessments
+    
+        # Insert into ta_hr_interview_assessments
         query = """
-            INSERT INTO tahr_interview_assessments (
-                name, score, candidate_id, candidate_name,
-                role_id, role_name, created_by_user
+            INSERT INTO ta_hr_interview_assessments (
+                template_name, drive_id, candidate_name, candidate,
+                score, role_name, department_name, created_by, created_at
             )
-            VALUES (:name, :score, :candidate_id, :candidate_name,
-                    :role_id, :role_name, :created_by_user)
+            VALUES (
+                :template_name, :drive_id, :candidate_name, :candidate,
+                :score, :role_name, :department_name, :created_by, NOW()
+            )
             RETURNING id
         """
-
+    
         values = {
-            "name": f"{body.candidateName} - TA/HR Interview Assessment",
-            "score": None,  # 🔹 TODO: parse score from body.assessmentContent if structured
-            "candidate_id": candidate_id,
+            "template_name": f"{body.candidateName} - TA/HR Interview Assessment",
+            "drive_id": created_docs.get("assessment").split("/d/")[1].split("/")[0] if created_docs.get("assessment") else None,
             "candidate_name": body.candidateName,
-            "role_id": role_id,
+            "candidate": candidate_id,
+            "score": None,  # or parse from assessmentContent if structured
             "role_name": role_display,
-            "created_by_user": subject or "system"
+            "department_name": None,  # optionally fetch from roles table if you store it there
+            "created_by": subject or "system"
         }
-
+    
         new_id = await database.execute(query=query, values=values)
         logger.info("✅ Inserted TA/HR assessment into DB with id=%s", new_id)
-
+    
     except Exception as e:
         logger.error("❌ Failed to persist TA/HR assessment: %s", e)
         errors.append(f"DB insert failed: {e}")
+
 
     return CreateTAHRAssessmentResponse(
         message="TA/HR Interview Assessment saved successfully",
