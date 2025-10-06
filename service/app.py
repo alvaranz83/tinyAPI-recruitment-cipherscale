@@ -3320,7 +3320,7 @@ async def create_second_tech_interview_assessment(request: Request, body: Create
 
         # 3️⃣ Build SQL insert aligned with schema
         query = """
-            INSERT INTO first_tech_interview_assessments (
+            INSERT INTO second_tech_interview_assessments (
                 template_name, drive_id, candidate_name, candidate,
                 score, role_name, department_name, created_by, created_at
             )
