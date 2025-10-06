@@ -2820,13 +2820,6 @@ class GetFirstTechTemplateRequest(BaseModel):
     userEmail: Optional[str] = None
 
 
-class TemplateFile(BaseModel):
-    id: str
-    name: str
-    text: Optional[str] = None
-    error: Optional[str] = None
-
-
 class GetFirstTechTemplateResponse(BaseModel):
     message: str
     roleId: str
