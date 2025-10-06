@@ -3261,7 +3261,7 @@ class CreateSecondTechInterviewAssessmentResponse(BaseModel):
 
 
 @app.post("/candidates/createSecondTechnicalInterviewAssessment", response_model=CreateSecondTechInterviewAssessmentResponse)
-def create_second_tech_interview_assessment(request: Request, body: CreateSecondTechInterviewAssessmentRequest):
+async def create_second_tech_interview_assessment(request: Request, body: CreateSecondTechInterviewAssessmentRequest):
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
     _, drive, docs = get_clients(subject)
