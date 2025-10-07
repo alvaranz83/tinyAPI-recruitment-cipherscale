@@ -15,6 +15,7 @@ from google.oauth2 import service_account
 from sqlalchemy import create_engine, MetaData, insert
 from databases import Database
 from db import database
+from uuid import UUID
 
 #
 
@@ -1932,7 +1933,7 @@ def create_hiring_pipeline(request: Request, body: CreateHiringPipelineRequest):
 # --- Response Models ---
 
 class CandidateSummary(BaseModel):
-    id: int
+    id: UUID
     full_name: str
 
 class StageSummary(BaseModel):
