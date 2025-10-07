@@ -3473,6 +3473,77 @@ async def import_candidates(request: Request, userEmail: Optional[str] = None):
     )
 
 
+class GetCandidateDocumentsRequest(BaseModel):
+    candidate_name: str
+    userEmail: Optional[str] = None
+
+
+class GetCandidateDocumentsResponse(BaseModel):
+    message: str
+    filters: Dict[str, Any]
+    results: Dict[str, Any]
+
+
+@app.post("/candidates/getDocument", response_model=GetCandidateDocumentsResponse)
+async def get_candidate_documents(request: Request, body: GetCandidateDocumentsRequest):
+    """
+    Fetch all relevant documents and records from the DB related to a candidate.
+    Supports partial name matching (ILIKE).
+    Returns structured JSON for GPT to interpret and find the relevant document.
+    """
+    require_api_key(request)
+
+    candidate_name = body.candidate_name.strip()
+    if not candidate_name:
+        raise HTTPException(400, "candidate_name is required")
+
+    # Log for debug
+    logger.info(f"🔍 Fetching candidate documents for name ~ '{candidate_name}'")
+
+    # Define all the queries
+    queries = {
+        "candidates": """
+            SELECT * FROM candidates
+            WHERE full_name ILIKE :pattern
+               OR first_name ILIKE :pattern
+               OR last_name ILIKE :pattern
+        """,
+        "ta_hr_interview_assessments": """
+            SELECT * FROM ta_hr_interview_assessments
+            WHERE candidate_name ILIKE :pattern
+        """,
+        "first_tech_interview_assessments": """
+            SELECT * FROM first_tech_interview_assessments
+            WHERE candidate_name ILIKE :pattern
+        """,
+        "second_tech_interview_assessments": """
+            SELECT * FROM second_tech_interview_assessments
+            WHERE candidate_name ILIKE :pattern
+        """
+    }
+
+    pattern = f"%{candidate_name}%"
+    results = {}
+
+    # Execute each query and collect the results
+    for table, sql in queries.items():
+        try:
+            rows = await database.fetch_all(sql, values={"pattern": pattern})
+            # Convert to list of dicts
+            results[table] = [dict(row) for row in rows]
+            logger.info(f"✅ Found {len(rows)} rows in {table}")
+        except Exception as e:
+            logger.error(f"❌ Error fetching {table}: {e}")
+            results[table] = {"error": str(e)}
+
+    total_records = sum(len(v) if isinstance(v, list) else 0 for v in results.values())
+
+    return GetCandidateDocumentsResponse(
+        message=f"Fetched {total_records} records across candidate-related tables.",
+        filters={"candidate_name": candidate_name},
+        results=results
+    )
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
