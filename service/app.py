@@ -2281,7 +2281,7 @@ class UploadCVsRequest(BaseModel):
 
 class UploadCVItemDecision(BaseModel):
     candidateName: str
-    positionId: str
+    positionId: Optional[str] = None
     stageQuery: str
     roleQuery: Optional[str] = None
     createdFileId: Optional[str] = None
