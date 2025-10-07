@@ -3355,11 +3355,15 @@ async def import_candidates(request: Request, userEmail: Optional[str] = None):
                         INSERT INTO candidates (
                             status, full_name, first_name, last_name,
                             cv_name, cv_url, source,
-                            current_stage_name, current_role_name, created_by_user
+                            current_stage_name, current_role_name, current_department_name,
+                            created_by_user, created_at
                         )
-                        VALUES (:status, :full_name, :first_name, :last_name,
-                                :cv_name, :cv_url, :source,
-                                :current_stage_name, :current_role_name, :created_by_user)
+                        VALUES (
+                            :status, :full_name, :first_name, :last_name,
+                            :cv_name, :cv_url, :source,
+                            :current_stage_name, :current_role_name, :current_department_name,
+                            :created_by_user, NOW()
+                        )
                         ON CONFLICT DO NOTHING
                     """
                     values = {
@@ -3372,9 +3376,10 @@ async def import_candidates(request: Request, userEmail: Optional[str] = None):
                         "source": "google-drive",
                         "current_stage_name": stage_name,
                         "current_role_name": role_name,
+                        "current_department_name": dept_name,  # 👈 add this
                         "created_by_user": "julio@cipherscale.com",
                     }
-
+                    
                     try:
                         result = await database.execute(query=query, values=values)
                         if result:
