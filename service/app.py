@@ -16,6 +16,7 @@ from sqlalchemy import create_engine, MetaData, insert
 from databases import Database
 from db import database
 from uuid import UUID
+import logging
 
 #
 
@@ -3339,97 +3340,152 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
         results=results
     )
 
-class MoveByRecruiteeWebhookRequest(BaseModel):
-    event: str
-    candidate_name: str
-    from_stage: str
-    to_stage: str
-    role_name: str
-    userEmail: Optional[str] = None
 
-class MoveByRecruiteeWebhookResponse(BaseModel):
-    message: str
-    candidate_name: str
-    role_name: str
-    from_stage: str
-    to_stage: str
-    moved: bool
-    error: Optional[str] = None
+# ----------------------------
+# Submodels for Recruitee Webhook
+# ----------------------------
+class Stage(BaseModel):
+    id: int
+    name: str
+    category: Optional[str] = None
 
+class Department(BaseModel):
+    id: int
+    name: str
+
+class Location(BaseModel):
+    id: int
+    country_code: Optional[str] = None
+    state_code: Optional[str] = None
+    full_address: Optional[str] = None
+
+class Offer(BaseModel):
+    id: int
+    title: str
+    kind: Optional[str] = None
+    slug: Optional[str] = None
+    department: Optional[Department] = None
+    locations: Optional[List[Location]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class Candidate(BaseModel):
+    id: int
+    name: str
+    emails: Optional[List[str]] = []
+    phones: Optional[List[str]] = []
+    photo_thumb_url: Optional[str] = None
+    source: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class CandidateMovedDetails(BaseModel):
+    from_stage: Optional[Stage] = None
+    to_stage: Optional[Stage] = None
+
+class Company(BaseModel):
+    id: int
+    name: str
+
+# ----------------------------
+# Main webhook schema
+# ----------------------------
+class RecruiteeWebhookPayload(BaseModel):
+    candidate: Candidate
+    details: Optional[CandidateMovedDetails] = None
+    offer: Optional[Offer] = None
+    company: Optional[Company] = None
+
+class RecruiteeWebhookRequest(BaseModel):
+    id: int
+    event_type: str
+    event_subtype: Optional[str] = None
+    attempt_count: int
+    created_at: str
+    payload: RecruiteeWebhookPayload
+
+
+
+# -------------------------------
+# Endpoint
+# -------------------------------
 
 @app.post("/candidates/moveByRecruiteeWebhook", response_model=MoveByRecruiteeWebhookResponse)
-async def move_by_recruitee_webhook(request: Request, body: MoveByRecruiteeWebhookRequest):
+async def move_by_recruitee_webhook(request: Request, body: RecruiteeWebhookRequest):
     """
-    Webhook endpoint to handle stage changes from Recruitee ATS.
-    Moves the candidate between Drive pipeline stages and updates DB.
+    Webhook endpoint to handle Recruitee 'candidate_moved' events.
+    Parses nested payloads correctly and performs Drive + DB move.
     """
     require_api_key(request)
-    subject = body.userEmail or _extract_subject_from_request(request)
+    subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
-    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
-    if not DEPARTMENTS_FOLDER_ID:
-        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
-
     try:
+        payload = body.payload
+        candidate_name = payload.candidate["name"]
+        role_name = payload.offer.get("title") or payload.offer.get("slug") or "Unknown Role"
+        from_stage = payload.details["from_stage"]["name"]
+        to_stage = payload.details["to_stage"]["name"]
+
+        logger.info(f"🎯 Received webhook for candidate '{candidate_name}' moving from '{from_stage}' to '{to_stage}' in role '{role_name}'")
+
         # Step 1️⃣ Resolve the role
-        role_score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, body.role_name)
+        DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+        if not DEPARTMENTS_FOLDER_ID:
+            raise HTTPException(500, "DEPARTMENTS_FOLDER_ID not set")
+
+        role_score, role_match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_name)
         if not role_match or role_score < _ROLE_SCORE_THRESHOLD:
-            raise Exception(f"Could not resolve role '{body.role_name}' (score={role_score})")
+            raise Exception(f"Could not resolve role '{role_name}' (score={role_score})")
 
         role_id = role_match["id"]
 
-        # Step 2️⃣ Load role’s pipeline
+        # Step 2️⃣ Load pipeline
         stages, file_index = _build_candidate_index(drive, role_id)
         if not stages:
-            raise Exception(f"No Hiring Pipeline found for role {body.role_name}")
+            raise Exception(f"No Hiring Pipeline found for role '{role_name}'")
 
-        # Step 3️⃣ Fuzzy match candidate + target stage
-        cand_score, cand_match, cand_display = _resolve_best_candidate_file(body.candidate_name, file_index)
-        stage_score, stage_match, stage_display = _resolve_best_stage(body.to_stage, stages)
+        # Step 3️⃣ Fuzzy match candidate & stage
+        cand_score, cand_match, cand_display = _resolve_best_candidate_file(candidate_name, file_index)
+        stage_score, stage_match, stage_display = _resolve_best_stage(to_stage, stages)
 
         if not cand_match:
-            raise Exception(f"No candidate file found matching '{body.candidate_name}'")
+            raise Exception(f"No candidate file found matching '{candidate_name}'")
         if not stage_match:
-            raise Exception(f"No stage found matching '{body.to_stage}'")
+            raise Exception(f"No stage found matching '{to_stage}'")
 
-        # Step 4️⃣ Move file if not already in that stage
         moved = False
         if cand_match["stageId"] != stage_match["id"]:
             _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
             moved = True
 
-            # Step 5️⃣ Update database
+            # Step 4️⃣ Update DB
             await database.execute(
                 """
                 UPDATE candidates
                 SET current_stage_name = :new_stage
                 WHERE cv_name = :cv_name OR full_name = :full_name
                 """,
-                {
-                    "new_stage": stage_match["name"],
-                    "cv_name": cand_match["name"],
-                    "full_name": body.candidate_name
-                }
+                {"new_stage": stage_match["name"], "cv_name": cand_match["name"], "full_name": candidate_name}
             )
 
         return MoveByRecruiteeWebhookResponse(
             message="Candidate moved successfully",
-            candidate_name=body.candidate_name,
-            role_name=body.role_name,
-            from_stage=body.from_stage,
-            to_stage=body.to_stage,
+            candidate_name=candidate_name,
+            role_name=role_name,
+            from_stage=from_stage,
+            to_stage=to_stage,
             moved=moved
         )
 
     except Exception as e:
-        logger.error(f"❌ Error in moveByRecruiteeWebhook: {e}")
+        logger.exception("❌ Failed to process Recruitee webhook")
         return MoveByRecruiteeWebhookResponse(
             message="Failed to move candidate",
-            candidate_name=body.candidate_name,
-            role_name=body.role_name,
-            from_stage=body.from_stage,
-            to_stage=body.to_stage,
+            candidate_name=payload.candidate.get("name", "Unknown"),
+            role_name=payload.offer.get("title", "Unknown") if payload.offer else "Unknown",
+            from_stage=payload.details["from_stage"]["name"] if payload.details else "Unknown",
+            to_stage=payload.details["to_stage"]["name"] if payload.details else "Unknown",
             moved=False,
             error=str(e)
         )
