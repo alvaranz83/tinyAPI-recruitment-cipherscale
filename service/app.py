@@ -3405,6 +3405,15 @@ class RecruiteeWebhookRequest(BaseModel):
     payload: RecruiteeWebhookPayload
 
 
+class MoveByRecruiteeWebhookResponse(BaseModel):
+    message: str
+    candidate_name: str
+    role_name: str
+    from_stage: str
+    to_stage: str
+    moved: bool
+    error: Optional[str] = None
+
 
 # -------------------------------
 # Endpoint
