@@ -3344,6 +3344,12 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
 # ----------------------------
 # Submodels for Recruitee Webhook
 # ----------------------------
+
+# Make Pydantic ignore unknown fields globally for these webhook models
+class RecruiteeBaseModel(BaseModel):
+    class Config:
+        extra = "ignore"
+
 class Stage(BaseModel):
     id: int
     name: str
@@ -3368,6 +3374,7 @@ class Offer(BaseModel):
     locations: Optional[List[Location]] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 class Candidate(BaseModel):
     id: int
@@ -3378,6 +3385,7 @@ class Candidate(BaseModel):
     source: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    referrer: Optional[Any] = None
 
 class CandidateMovedDetails(BaseModel):
     from_stage: Optional[Stage] = None
