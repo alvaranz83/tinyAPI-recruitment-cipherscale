@@ -2054,25 +2054,30 @@ class MoveResponse(BaseModel):
 
 @app.post("/candidates/moveByPrompt", response_model=MoveResponse)
 async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest):
-    """
-    New version of moveByPrompt — receives structured move instructions:
-    Each includes candidate name, stage, and role.
-    """
     require_api_key(request)
     subject = body.userEmail or _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
+    if not DEPARTMENTS_FOLDER_ID:
+        raise HTTPException(500, "DEPARTMENTS_FOLDER_ID env var not set")
 
     decisions: List[MoveDecision] = []
 
     for move in body.moves:
         try:
-            # Resolve role folder and pipeline automatically (fuzzy match)
-            role_id, role_info = _resolve_role(move.roleQuery)
-            stages, file_index = _build_candidate_index(drive=None, position_id=role_id)
+            # ✅ Resolve the role first
+            score, match, role_display = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, move.roleQuery)
+            if not match or score < _ROLE_SCORE_THRESHOLD:
+                raise Exception(f"Could not resolve role '{move.roleQuery}' (score={score})")
+            role_id = match["id"]
+            role_info = match
 
-            # Resolve target stage
+            # ✅ Build stage + file index
+            stages, file_index = _build_candidate_index(drive, role_id)
+
+            # ✅ Resolve stage & candidate
             stage_score, stage_match, stage_display = _resolve_best_stage(move.stageQuery, stages)
-
-            # Resolve candidate
             cand_score, cand_match, cand_display = _resolve_best_candidate_file(move.candidateName, file_index)
 
             decision = MoveDecision(
@@ -2088,7 +2093,6 @@ async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest)
                 error=None
             )
 
-            # Validate and move if thresholds are met
             if (
                 cand_match
                 and stage_match
@@ -2097,9 +2101,8 @@ async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest)
                 and cand_match["stageId"] != stage_match["id"]
             ):
                 if not body.dryRun:
-                    _move_file_between_stages(None, cand_match["id"], cand_match["stageId"], stage_match["id"])
+                    _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
                     decision.moved = True
-
                     await database.execute(
                         """
                         UPDATE candidates
@@ -2123,7 +2126,7 @@ async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest)
             )
 
     return MoveResponse(
-        message="Processed moveByPrompt (new structure)",
+        message="Processed moveByPrompt (fixed resolver)",
         dryRun=body.dryRun,
         decisions=decisions
     )
