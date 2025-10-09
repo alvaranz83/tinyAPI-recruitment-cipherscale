@@ -2017,19 +2017,9 @@ async def get_candidates_summary(request: Request, userEmail: Optional[str] = Qu
 # Pydantic models for Move API
 # =========================
 
-class MoveGroup(BaseModel):
-    candidateQueries: List[str] = Field(..., description="Names/partials/typos allowed")
-    stageQuery: str = Field(..., description="Target stage name (fuzzy)")
-
 class MoveByPromptRequest(BaseModel):
     positionId: str = Field(..., description="Role folder ID")
     prompt: str = Field(..., description="Free-text instruction like 'move alice and bob to onsite'")
-    dryRun: bool = False
-    userEmail: Optional[str] = None
-
-class MoveStructuredRequest(BaseModel):
-    positionId: str = Field(..., description="Role folder ID")
-    moves: List[MoveGroup]
     dryRun: bool = False
     userEmail: Optional[str] = None
 
@@ -2153,108 +2143,6 @@ async def move_candidates_by_prompt(request: Request, body: MoveByPromptRequest)
 
     return MoveResponse(
         message="Processed moveByPrompt",
-        positionId=body.positionId,
-        dryRun=body.dryRun,
-        thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
-        decisions=decisions
-    )
-
-
-# =========================
-# POST /candidates/move (structured)
-# =========================
-
-@app.post("/candidates/move", response_model=MoveResponse)
-async def move_candidates_structured(request: Request, body: MoveStructuredRequest):
-    require_api_key(request)
-    subject = body.userEmail or _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
-
-    stages, file_index = _build_candidate_index(drive, body.positionId)
-    if not stages:
-        raise HTTPException(404, "Hiring Pipeline / stages not found under the specified role")
-
-    decisions: List[MoveDecision] = []
-
-    for grp in body.moves:
-        stage_score, stage_match, stage_display = _resolve_best_stage(grp.stageQuery, stages)
-
-        for cand_q in grp.candidateQueries:
-            cand_score, cand_match, cand_display = _resolve_best_candidate_file(cand_q, file_index)
-
-            decision = MoveDecision(
-                candidateQuery=cand_q,
-                candidateMatchedName=cand_display if cand_match else None,
-                candidateFileId=cand_match["id"] if cand_match else None,
-                candidateScore=cand_score,
-                fromStageId=cand_match["stageId"] if cand_match else None,
-                fromStageName=cand_match["stageName"] if cand_match else None,
-                toStageQuery=grp.stageQuery,
-                toStageId=stage_match["id"] if stage_match else None,
-                toStageName=stage_match["name"] if stage_match else None,
-                stageScore=stage_score,
-                moved=False,
-                error=None
-            )
-
-            if cand_match and stage_match and cand_score >= _NAME_SCORE_THRESHOLD and stage_score >= _STAGE_SCORE_THRESHOLD and cand_match["stageId"] != stage_match["id"]:
-                if not body.dryRun:
-                    try:
-                        # ✅ Move file in Drive
-                        _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
-                        decision.moved = True
-
-                        new_stage = stage_match["name"]
-                        cv_name = cand_match["name"]
-
-                        # ✅ Update candidates table
-                        await database.execute(
-                            """
-                            UPDATE candidates
-                            SET current_stage_name = :new_stage,
-                                status = CASE WHEN LOWER(:new_stage) = 'disqualified' THEN 'disqualified' ELSE status END
-                            WHERE cv_name = :cv_name
-                            """,
-                            {"new_stage": new_stage, "cv_name": cv_name}
-                        )
-
-                        # ✅ Insert into candidate_moves
-                        candidate_id = await database.fetch_val("SELECT id FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
-                        role_name = await database.fetch_val("SELECT current_role_name FROM candidates WHERE cv_name = :cv_name", {"cv_name": cv_name})
-
-                        await database.execute(
-                            """
-                            INSERT INTO candidate_moves (
-                                movefrom, moveto, movedbyuser,
-                                candidateid, candidatename,
-                                rolleid, rolename, moved_at
-                            )
-                            VALUES (:movefrom, :moveto, :movedbyuser,
-                                    :candidateid, :candidatename,
-                                    :rolleid, :rolename, NOW())
-                            """,
-                            {
-                                "movefrom": cand_match["stageName"],
-                                "moveto": new_stage,
-                                "movedbyuser": subject or "system",
-                                "candidateid": candidate_id,
-                                "candidatename": cand_match["name"],
-                                "rolleid": body.positionId,
-                                "rolename": role_name
-                            }
-                        )
-
-                        # Keep local index in sync
-                        file_index[cand_match["id"]]["stageId"] = stage_match["id"]
-                        file_index[cand_match["id"]]["stageName"] = stage_match["name"]
-
-                    except Exception as e:
-                        decision.error = f"Move failed: {e}"
-
-            decisions.append(decision)
-
-    return MoveResponse(
-        message="Processed structured move",
         positionId=body.positionId,
         dryRun=body.dryRun,
         thresholds={"name": _NAME_SCORE_THRESHOLD, "stage": _STAGE_SCORE_THRESHOLD},
