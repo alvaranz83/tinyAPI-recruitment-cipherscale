@@ -3342,100 +3342,102 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
 
 
 # ----------------------------
-# Submodels for Recruitee Webhook
+# Recruitee Webhook Models (final, tolerant)
 # ----------------------------
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
 
-# --- Base ---
 class RecruiteeBaseModel(BaseModel):
     class Config:
-        extra = "ignore"  # Ignore unexpected fields from Recruitee
+        extra = "allow"  # ✅ allow new or unknown fields
 
 
-# --- Core Submodels ---
+# --- Submodels ---
 class Stage(RecruiteeBaseModel):
-    id: int
-    name: str
-    category: Optional[str] = None
+    id: Optional[int]
+    name: Optional[str]
+    category: Optional[str]
 
 
 class Department(RecruiteeBaseModel):
-    id: int
-    name: str
+    id: Optional[int]
+    name: Optional[str]
 
 
 class Location(RecruiteeBaseModel):
-    id: int
-    country_code: Optional[str] = None
-    state_code: Optional[str] = None
-    full_address: Optional[str] = None
+    id: Optional[int]
+    country_code: Optional[str]
+    state_code: Optional[str]
+    full_address: Optional[str]
 
 
 class Tag(RecruiteeBaseModel):
-    id: int
-    name: str
+    id: Optional[int]
+    name: Optional[str]
 
 
 class Offer(RecruiteeBaseModel):
-    id: int
-    title: str
-    kind: Optional[str] = None
-    slug: Optional[str] = None
-    department: Optional[Department] = None
-    locations: Optional[List[Location]] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    tags: Optional[List[Tag]] = None   # ✅ changed from List[str] → List[Tag]
+    id: Optional[int]
+    title: Optional[str]
+    kind: Optional[str]
+    slug: Optional[str]
+    department: Optional[Department]
+    locations: Optional[List[Location]]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+    tags: Optional[List[Tag]]
+    status: Optional[str]
 
 
 class Candidate(RecruiteeBaseModel):
-    id: int
-    name: str
-    emails: Optional[List[str]] = []
-    phones: Optional[List[str]] = []
-    photo_thumb_url: Optional[str] = None
-    source: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    referrer: Optional[Any] = None
+    id: Optional[int]
+    name: Optional[str]
+    emails: Optional[List[str]]
+    phones: Optional[List[str]]
+    photo_thumb_url: Optional[str]
+    referrer: Optional[str]
+    source: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+    has_avatar: Optional[bool]
+    initials: Optional[str]
 
 
 class CandidateMovedDetails(RecruiteeBaseModel):
-    from_stage: Optional[Stage] = None
-    to_stage: Optional[Stage] = None
-    disqualify_reason: Optional[dict] = None  # ✅ new: test payload includes disqualify_reason
+    from_stage: Optional[Stage]
+    to_stage: Optional[Stage]
+    disqualify_reason: Optional[Dict[str, Any]]
 
 
 class Company(RecruiteeBaseModel):
-    id: int
-    name: str
+    id: Optional[int]
+    name: Optional[str]
 
 
-# --- Inner Payload Model ---
 class RecruiteeWebhookPayload(RecruiteeBaseModel):
-    attempt_count: Optional[int] = None
-    created_at: Optional[str] = None
-    candidate: Candidate
-    details: Optional[CandidateMovedDetails] = None
-    offer: Optional[Offer] = None
-    company: Optional[Company] = None
-    placement_locations: Optional[List[Location]] = None
+    attempt_count: Optional[int]
+    created_at: Optional[str]
+    candidate: Optional[Candidate]
+    details: Optional[CandidateMovedDetails]
+    offer: Optional[Offer]
+    company: Optional[Company]
+    placement_locations: Optional[List[Location]]
 
 
-# --- Attributes Wrapper ---
 class RecruiteeWebhookAttributes(RecruiteeBaseModel):
-    event_type: str
-    event_subtype: Optional[str] = None
-    level: Optional[str] = None
-    payload: Optional[RecruiteeWebhookPayload] = None
-    test: Optional[bool] = False
+    event_type: Optional[str]
+    event_subtype: Optional[str]
+    level: Optional[str]
+    payload: Optional[RecruiteeWebhookPayload]
+    test: Optional[bool]
 
 
-# --- Root Request ---
 class RecruiteeWebhookRequest(RecruiteeBaseModel):
-    message: Optional[str] = ""
-    attributes: RecruiteeWebhookAttributes
-    tags: Optional[dict] = None
-    timestamp: Optional[str] = None
+    message: Optional[str]
+    attributes: Optional[RecruiteeWebhookAttributes]  # ✅ made optional
+    tags: Optional[Dict[str, Any]]
+    timestamp: Optional[str]
+
 
 # -------------------------------
 # Endpoint
