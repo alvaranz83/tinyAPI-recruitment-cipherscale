@@ -3599,16 +3599,18 @@ async def move_by_recruitee_webhook(request: Request):
             "error": str(e),
         }
 
-
+# -------------------------------
+# /candidates/newCandidateRecruiteeWebhook
+# -------------------------------
 @app.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
     """
     Handles Recruitee 'new_candidate' webhook events.
-    ✅ Logs raw payload
-    ✅ Validates structure
-    ✅ Extracts candidate, offer, and department info
-    ✅ Inserts into `candidates` DB table if not existing
+    ✅ Maps Recruitee payload -> PostgreSQL columns
+    ✅ Inserts (or upserts) into candidates table
+    ✅ Handles test webhooks gracefully
     """
+
     # Step 1️⃣ — Read and log the raw body
     try:
         raw_body = await request.body()
@@ -3625,7 +3627,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.exception("❌ Invalid JSON format: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
-    # Step 3️⃣ — Validate loosely against known schema
+    # Step 3️⃣ — Validate against flexible Pydantic model
     try:
         body = RecruiteeWebhookRequest(**json_data)
         logger.info("✅ Webhook validated successfully via Pydantic model.")
@@ -3638,115 +3640,151 @@ async def new_candidate_recruitee_webhook(request: Request):
     if isinstance(attrs, dict):
         event_type = attrs.get("event_type")
         event_subtype = attrs.get("event_subtype")
+        test_flag = attrs.get("test", False)
         payload = attrs.get("payload")
     else:
         event_type = getattr(attrs, "event_type", None)
         event_subtype = getattr(attrs, "event_subtype", None)
+        test_flag = getattr(attrs, "test", False)
         payload = getattr(attrs, "payload", None)
 
-    logger.info("📦 Event type: %s | Subtype: %s", event_type, event_subtype)
+    logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
 
-    # Step 5️⃣ — Only process 'new_candidate' events
-    if not event_type or event_type != "new_candidate":
-        logger.info("⚙️ Ignoring non-new_candidate event type: %s", event_type)
+    # Step 5️⃣ — Skip test webhooks
+    if test_flag:
+        logger.info("🧪 Test webhook received — responding 200 OK.")
+        return {"message": "Recruitee webhook verified successfully (test event)."}
+
+    if event_type != "new_candidate":
+        logger.info("⚙️ Ignoring non-new_candidate event: %s", event_type)
         return {"message": f"Ignored event type '{event_type}'"}
 
     if not payload:
         logger.warning("⚠️ No payload found in webhook.")
         return {"message": "No payload found."}
 
-    # Step 6️⃣ — Extract candidate + offer info
+    # Step 6️⃣ — Extract candidate + offer + department data
     try:
         candidate = getattr(payload, "candidate", None)
         offers = getattr(payload, "offers", None)
-        company = getattr(payload, "company", None)
 
         if not candidate:
-            raise Exception("Missing candidate in payload")
+            raise Exception("Missing candidate block in webhook payload")
 
-        candidate_name = getattr(candidate, "name", None) or "Unknown"
-        candidate_email = ",".join(getattr(candidate, "emails", []) or [])
-        candidate_phone = ",".join(getattr(candidate, "phones", []) or [])
-        candidate_source = getattr(candidate, "source", None)
-        candidate_photo = getattr(candidate, "photo_thumb_url", None)
-        candidate_created = getattr(candidate, "created_at", None)
+        # Candidate core info
+        recruitee_id = getattr(candidate, "id", None)
+        name = getattr(candidate, "name", None)
+        emails = ",".join(getattr(candidate, "emails", []) or [])
+        phones = ",".join(getattr(candidate, "phones", []) or [])
+        photo_thumb_url = getattr(candidate, "photo_thumb_url", None)
+        referrer = getattr(candidate, "referrer", None)
+        source = getattr(candidate, "source", None)
 
-        role_name = None
-        dept_name = None
-        if offers and isinstance(offers, list) and len(offers) > 0:
+        # Offer / job info
+        department_id = None
+        department_name = None
+        job_title = None
+
+        if offers and len(offers) > 0:
             offer = offers[0]
-            role_name = getattr(offer, "title", None) or getattr(offer, "slug", "Unknown Role")
+            job_title = getattr(offer, "title", None)
             dept = getattr(offer, "department", None)
-            dept_name = getattr(dept, "name", None) if dept else None
+            if dept:
+                department_id = getattr(dept, "id", None)
+                department_name = getattr(dept, "name", None)
 
         logger.info(
-            "👤 New candidate: %s | Role: %s | Dept: %s | Source: %s",
-            candidate_name, role_name, dept_name, candidate_source
+            "👤 New candidate: %s | Dept: %s | Job: %s | Source: %s",
+            name, department_name, job_title, source
         )
+
     except Exception as e:
         logger.exception("❌ Failed extracting candidate info: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
-    # Step 7️⃣ — Insert into DB if not exists
+    # Step 7️⃣ — Persist into PostgreSQL
     try:
-        first, last = _split_name(candidate_name)
-
-        # Check if candidate already exists
-        existing = await database.fetch_val(
-            """
-            SELECT id FROM candidates
-            WHERE full_name = :full_name OR lower(full_name) = lower(:full_name)
-            """,
-            {"full_name": candidate_name},
-        )
-        if existing:
-            logger.info("ℹ️ Candidate already exists: %s", candidate_name)
-            return {"message": f"Candidate '{candidate_name}' already exists", "existing_id": str(existing)}
-
-        # Insert new candidate
         query = """
             INSERT INTO candidates (
-                status, full_name, first_name, last_name,
-                emails, phones, source, current_stage_name,
-                current_role_name, current_department_name,
-                created_by_user, created_at, cv_url
+                recruitee_event_subtype,
+                recruitee_id,
+                full_name,
+                emails,
+                phones,
+                photo_thumb_url,
+                referrer,
+                source,
+                department_id,
+                department_name,
+                job_title,
+                created_at
             )
             VALUES (
-                :status, :full_name, :first_name, :last_name,
-                :emails, :phones, :source, :current_stage_name,
-                :current_role_name, :current_department_name,
-                :created_by_user, NOW(), :cv_url
+                :recruitee_event_subtype,
+                :recruitee_id,
+                :full_name,
+                :emails,
+                :phones,
+                :photo_thumb_url,
+                :referrer,
+                :source,
+                :department_id,
+                :department_name,
+                :job_title,
+                NOW()
             )
+            ON CONFLICT (recruitee_id) DO UPDATE
+            SET
+                full_name = EXCLUDED.full_name,
+                emails = EXCLUDED.emails,
+                phones = EXCLUDED.phones,
+                photo_thumb_url = EXCLUDED.photo_thumb_url,
+                referrer = EXCLUDED.referrer,
+                source = EXCLUDED.source,
+                department_id = EXCLUDED.department_id,
+                department_name = EXCLUDED.department_name,
+                job_title = EXCLUDED.job_title,
+                updated_at = NOW()
             RETURNING id
         """
+
         values = {
-            "status": "active",
-            "full_name": candidate_name,
-            "first_name": first,
-            "last_name": last,
-            "emails": candidate_email or None,
-            "phones": candidate_phone or None,
-            "source": candidate_source or "recruitee",
-            "current_stage_name": "Imported from Recruitee",
-            "current_role_name": role_name or "Unknown Role",
-            "current_department_name": dept_name or "Unknown Department",
-            "created_by_user": "system@recruitee-webhook",
-            "cv_url": candidate_photo or None,
+            "recruitee_event_subtype": event_subtype or "unknown",
+            "recruitee_id": recruitee_id,
+            "full_name": name,
+            "emails": emails,
+            "phones": phones,
+            "photo_thumb_url": photo_thumb_url,
+            "referrer": referrer,
+            "source": source,
+            "department_id": department_id,
+            "department_name": department_name,
+            "job_title": job_title,
         }
 
-        new_id = await database.execute(query=query, values=values)
-        logger.info("✅ Inserted new candidate '%s' (id=%s)", candidate_name, new_id)
+        new_id = await database.fetch_val(query, values)
+        logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
 
         return {
-            "message": f"New candidate '{candidate_name}' created successfully.",
-            "candidate_name": candidate_name,
-            "role_name": role_name,
-            "department_name": dept_name,
+            "message": f"Candidate '{name}' created/updated successfully.",
             "id": new_id,
+            "mapping": {
+                "recruitee_event_subtype": event_subtype,
+                "recruitee_id": recruitee_id,
+                "full_name": name,
+                "emails": emails,
+                "phones": phones,
+                "photo_thumb_url": photo_thumb_url,
+                "referrer": referrer,
+                "source": source,
+                "department_id": department_id,
+                "department_name": department_name,
+                "job_title": job_title,
+            },
         }
 
     except Exception as e:
-        logger.exception("❌ Failed inserting new candidate: %s", e)
+        logger.exception("❌ Database insert failed: %s", e)
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
 
 
