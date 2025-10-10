@@ -3434,9 +3434,9 @@ class RecruiteeWebhookAttributes(RecruiteeBaseModel):
 
 class RecruiteeWebhookRequest(RecruiteeBaseModel):
     message: Optional[str]
-    attributes: Optional[RecruiteeWebhookAttributes]  # ✅ made optional
-    tags: Optional[Dict[str, Any]]
-    timestamp: Optional[str]
+    attributes: Optional[Union[RecruiteeWebhookAttributes, dict]] = None  # ✅ more tolerant
+    tags: Optional[Dict[str, Any]] = None
+    timestamp: Optional[str] = None
 
 
 # -------------------------------
