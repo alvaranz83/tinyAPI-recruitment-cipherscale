@@ -3600,6 +3600,156 @@ async def move_by_recruitee_webhook(request: Request):
         }
 
 
+@app.post("/candidates/newCandidateRecruiteeWebhook")
+async def new_candidate_recruitee_webhook(request: Request):
+    """
+    Handles Recruitee 'new_candidate' webhook events.
+    ✅ Logs raw payload
+    ✅ Validates structure
+    ✅ Extracts candidate, offer, and department info
+    ✅ Inserts into `candidates` DB table if not existing
+    """
+    # Step 1️⃣ — Read and log the raw body
+    try:
+        raw_body = await request.body()
+        raw_text = raw_body.decode("utf-8")
+        logger.info("🔍 RAW WEBHOOK PAYLOAD (Recruitee newCandidate):\n%s", raw_text)
+    except Exception as e:
+        logger.exception("❌ Failed to read webhook body: %s", e)
+        raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
+
+    # Step 2️⃣ — Parse JSON manually
+    try:
+        json_data = json.loads(raw_text)
+    except Exception as e:
+        logger.exception("❌ Invalid JSON format: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    # Step 3️⃣ — Validate loosely against known schema
+    try:
+        body = RecruiteeWebhookRequest(**json_data)
+        logger.info("✅ Webhook validated successfully via Pydantic model.")
+    except Exception as e:
+        logger.exception("❌ Validation error while parsing webhook payload: %s", e)
+        raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
+
+    # Step 4️⃣ — Extract attributes safely
+    attrs = body.attributes or {}
+    if isinstance(attrs, dict):
+        event_type = attrs.get("event_type")
+        event_subtype = attrs.get("event_subtype")
+        payload = attrs.get("payload")
+    else:
+        event_type = getattr(attrs, "event_type", None)
+        event_subtype = getattr(attrs, "event_subtype", None)
+        payload = getattr(attrs, "payload", None)
+
+    logger.info("📦 Event type: %s | Subtype: %s", event_type, event_subtype)
+
+    # Step 5️⃣ — Only process 'new_candidate' events
+    if not event_type or event_type != "new_candidate":
+        logger.info("⚙️ Ignoring non-new_candidate event type: %s", event_type)
+        return {"message": f"Ignored event type '{event_type}'"}
+
+    if not payload:
+        logger.warning("⚠️ No payload found in webhook.")
+        return {"message": "No payload found."}
+
+    # Step 6️⃣ — Extract candidate + offer info
+    try:
+        candidate = getattr(payload, "candidate", None)
+        offers = getattr(payload, "offers", None)
+        company = getattr(payload, "company", None)
+
+        if not candidate:
+            raise Exception("Missing candidate in payload")
+
+        candidate_name = getattr(candidate, "name", None) or "Unknown"
+        candidate_email = ",".join(getattr(candidate, "emails", []) or [])
+        candidate_phone = ",".join(getattr(candidate, "phones", []) or [])
+        candidate_source = getattr(candidate, "source", None)
+        candidate_photo = getattr(candidate, "photo_thumb_url", None)
+        candidate_created = getattr(candidate, "created_at", None)
+
+        role_name = None
+        dept_name = None
+        if offers and isinstance(offers, list) and len(offers) > 0:
+            offer = offers[0]
+            role_name = getattr(offer, "title", None) or getattr(offer, "slug", "Unknown Role")
+            dept = getattr(offer, "department", None)
+            dept_name = getattr(dept, "name", None) if dept else None
+
+        logger.info(
+            "👤 New candidate: %s | Role: %s | Dept: %s | Source: %s",
+            candidate_name, role_name, dept_name, candidate_source
+        )
+    except Exception as e:
+        logger.exception("❌ Failed extracting candidate info: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
+
+    # Step 7️⃣ — Insert into DB if not exists
+    try:
+        first, last = _split_name(candidate_name)
+
+        # Check if candidate already exists
+        existing = await database.fetch_val(
+            """
+            SELECT id FROM candidates
+            WHERE full_name = :full_name OR lower(full_name) = lower(:full_name)
+            """,
+            {"full_name": candidate_name},
+        )
+        if existing:
+            logger.info("ℹ️ Candidate already exists: %s", candidate_name)
+            return {"message": f"Candidate '{candidate_name}' already exists", "existing_id": str(existing)}
+
+        # Insert new candidate
+        query = """
+            INSERT INTO candidates (
+                status, full_name, first_name, last_name,
+                emails, phones, source, current_stage_name,
+                current_role_name, current_department_name,
+                created_by_user, created_at, cv_url
+            )
+            VALUES (
+                :status, :full_name, :first_name, :last_name,
+                :emails, :phones, :source, :current_stage_name,
+                :current_role_name, :current_department_name,
+                :created_by_user, NOW(), :cv_url
+            )
+            RETURNING id
+        """
+        values = {
+            "status": "active",
+            "full_name": candidate_name,
+            "first_name": first,
+            "last_name": last,
+            "emails": candidate_email or None,
+            "phones": candidate_phone or None,
+            "source": candidate_source or "recruitee",
+            "current_stage_name": "Imported from Recruitee",
+            "current_role_name": role_name or "Unknown Role",
+            "current_department_name": dept_name or "Unknown Department",
+            "created_by_user": "system@recruitee-webhook",
+            "cv_url": candidate_photo or None,
+        }
+
+        new_id = await database.execute(query=query, values=values)
+        logger.info("✅ Inserted new candidate '%s' (id=%s)", candidate_name, new_id)
+
+        return {
+            "message": f"New candidate '{candidate_name}' created successfully.",
+            "candidate_name": candidate_name,
+            "role_name": role_name,
+            "department_name": dept_name,
+            "id": new_id,
+        }
+
+    except Exception as e:
+        logger.exception("❌ Failed inserting new candidate: %s", e)
+        raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
