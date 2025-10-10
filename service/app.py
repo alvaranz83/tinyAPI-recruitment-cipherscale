@@ -3432,11 +3432,15 @@ class RecruiteeWebhookAttributes(RecruiteeBaseModel):
     test: Optional[bool]
 
 
-class RecruiteeWebhookRequest(RecruiteeBaseModel):
-    message: Optional[str]
-    attributes: Optional[Union[RecruiteeWebhookAttributes, dict]] = None  # ✅ more tolerant
+class RecruiteeWebhookRequest(BaseModel):
+    message: Optional[str] = None
+    attributes: Optional[Any] = None  # ✅ fully flexible: can be dict or nested object
     tags: Optional[Dict[str, Any]] = None
     timestamp: Optional[str] = None
+
+    class Config:
+        extra = "allow"  # ✅ ignore anything new Recruitee adds
+
 
 
 # -------------------------------
