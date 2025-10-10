@@ -3426,7 +3426,7 @@ class RecruiteeWebhookAttributes(RecruiteeBaseModel):
     event_type: str
     event_subtype: Optional[str] = None
     level: Optional[str] = None
-    payload: RecruiteeWebhookPayload
+    payload: Optional[RecruiteeWebhookPayload] = None
     test: Optional[bool] = False
 
 
