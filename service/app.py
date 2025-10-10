@@ -3345,27 +3345,37 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
 # Submodels for Recruitee Webhook
 # ----------------------------
 
-# Make Pydantic ignore unknown fields globally for these webhook models
+# --- Base ---
 class RecruiteeBaseModel(BaseModel):
     class Config:
-        extra = "ignore"
+        extra = "ignore"  # Ignore unexpected fields from Recruitee
 
-class Stage(BaseModel):
+
+# --- Core Submodels ---
+class Stage(RecruiteeBaseModel):
     id: int
     name: str
     category: Optional[str] = None
 
-class Department(BaseModel):
+
+class Department(RecruiteeBaseModel):
     id: int
     name: str
 
-class Location(BaseModel):
+
+class Location(RecruiteeBaseModel):
     id: int
     country_code: Optional[str] = None
     state_code: Optional[str] = None
     full_address: Optional[str] = None
 
-class Offer(BaseModel):
+
+class Tag(RecruiteeBaseModel):
+    id: int
+    name: str
+
+
+class Offer(RecruiteeBaseModel):
     id: int
     title: str
     kind: Optional[str] = None
@@ -3374,9 +3384,10 @@ class Offer(BaseModel):
     locations: Optional[List[Location]] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-    tags: Optional[List[str]] = None
+    tags: Optional[List[Tag]] = None   # ✅ changed from List[str] → List[Tag]
 
-class Candidate(BaseModel):
+
+class Candidate(RecruiteeBaseModel):
     id: int
     name: str
     emails: Optional[List[str]] = []
@@ -3387,41 +3398,44 @@ class Candidate(BaseModel):
     updated_at: Optional[str] = None
     referrer: Optional[Any] = None
 
-class CandidateMovedDetails(BaseModel):
+
+class CandidateMovedDetails(RecruiteeBaseModel):
     from_stage: Optional[Stage] = None
     to_stage: Optional[Stage] = None
+    disqualify_reason: Optional[dict] = None  # ✅ new: test payload includes disqualify_reason
 
-class Company(BaseModel):
+
+class Company(RecruiteeBaseModel):
     id: int
     name: str
 
-# ----------------------------
-# Main webhook schema
-# ----------------------------
-class RecruiteeWebhookPayload(BaseModel):
+
+# --- Inner Payload Model ---
+class RecruiteeWebhookPayload(RecruiteeBaseModel):
+    attempt_count: Optional[int] = None
+    created_at: Optional[str] = None
     candidate: Candidate
     details: Optional[CandidateMovedDetails] = None
     offer: Optional[Offer] = None
     company: Optional[Company] = None
+    placement_locations: Optional[List[Location]] = None
 
-class RecruiteeWebhookRequest(BaseModel):
-    id: int
+
+# --- Attributes Wrapper ---
+class RecruiteeWebhookAttributes(RecruiteeBaseModel):
     event_type: str
     event_subtype: Optional[str] = None
-    attempt_count: int
-    created_at: str
+    level: Optional[str] = None
     payload: RecruiteeWebhookPayload
+    test: Optional[bool] = False
 
 
-class MoveByRecruiteeWebhookResponse(BaseModel):
-    message: str
-    candidate_name: str
-    role_name: str
-    from_stage: str
-    to_stage: str
-    moved: bool
-    error: Optional[str] = None
-
+# --- Root Request ---
+class RecruiteeWebhookRequest(RecruiteeBaseModel):
+    message: Optional[str] = ""
+    attributes: RecruiteeWebhookAttributes
+    tags: Optional[dict] = None
+    timestamp: Optional[str] = None
 
 # -------------------------------
 # Endpoint
@@ -3459,6 +3473,17 @@ async def move_by_recruitee_webhook(request: Request):
     except Exception as e:
         logger.exception("❌ Validation error while parsing webhook payload: %s", e)
         raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
+    
+    # Step 4️⃣ — Log top-level info
+    attrs = body.attributes
+    logger.info("📦 Event type: %s | Subtype: %s | Test: %s",
+                attrs.event_type, attrs.event_subtype, attrs.test)
+    
+    # Step 5️⃣ — Handle test events
+    if attrs.test:
+        logger.info("🧪 Test webhook received — responding 200 OK.")
+        return {"message": "Recruitee webhook verified successfully."}
+
 
     # Step 4️⃣ — Log top-level info for context
     logger.info("📦 Event type: %s | Subtype: %s | Test: %s",
