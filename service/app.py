@@ -3427,86 +3427,121 @@ class MoveByRecruiteeWebhookResponse(BaseModel):
 # Endpoint
 # -------------------------------
 
-@app.post("/candidates/moveByRecruiteeWebhook", response_model=MoveByRecruiteeWebhookResponse)
-async def move_by_recruitee_webhook(
-    request: Request,
-    body: RecruiteeWebhookRequest
-):
+@app.post("/candidates/moveByRecruiteeWebhook")
+async def move_by_recruitee_webhook(request: Request):
     """
     Webhook endpoint to handle Recruitee 'candidate_moved' events.
-    Automatically validated by FastAPI.
+    Handles the nested 'attributes' JSON and logs full payloads.
     """
 
-    # ✅ Log raw payload for debugging
-    raw_body = await request.body()
-    logger.info("🔍 RAW PAYLOAD: %s", raw_body.decode("utf-8"))
-
-    # ✅ Continue your logic using `body`
-    payload = body.payload
-    candidate_name = payload.candidate.name
-    role_name = payload.offer.title if payload.offer else "Unknown Role"
-    from_stage = payload.details.from_stage.name if payload.details and payload.details.from_stage else "Unknown"
-    to_stage = payload.details.to_stage.name if payload.details and payload.details.to_stage else "Unknown"
-
-    logger.info(f"🎯 Candidate '{candidate_name}' moved from '{from_stage}' → '{to_stage}' for role '{role_name}'")
-
-    # ✅ Process move normally
+    # Step 1️⃣ – Read and log the raw webhook body
     try:
-        require_api_key(request)
-        subject = _extract_subject_from_request(request)
-        _, drive, _ = get_clients(subject)
+        raw_body = await request.body()
+        raw_text = raw_body.decode("utf-8")
+        logger.info("🔍 RAW WEBHOOK PAYLOAD (Recruitee):\n%s", raw_text)
+    except Exception as e:
+        logger.exception("❌ Failed to read webhook body: %s", e)
+        raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
 
+    # Step 2️⃣ – Parse JSON manually
+    try:
+        data = json.loads(raw_text)
+    except Exception as e:
+        logger.exception("❌ Invalid JSON payload: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    # Step 3️⃣ – Extract relevant data from nested structure
+    attributes = data.get("attributes", {})
+    payload = attributes.get("payload", {})
+    event_type = attributes.get("event_type")
+    event_subtype = attributes.get("event_subtype")
+
+    if not payload or not event_type:
+        logger.warning("⚠️ Missing expected fields in webhook payload.")
+        raise HTTPException(status_code=400, detail="Malformed webhook: missing attributes.payload or event_type")
+
+    logger.info("📦 Event type: %s | Subtype: %s", event_type, event_subtype)
+
+    # Step 4️⃣ – Extract candidate and movement info
+    candidate = payload.get("candidate", {})
+    offer = payload.get("offer", {})
+    details = payload.get("details", {})
+
+    candidate_name = candidate.get("name", "Unknown Candidate")
+    role_name = offer.get("title") or offer.get("slug") or "Unknown Role"
+    from_stage = details.get("from_stage", {}).get("name", "Unknown")
+    to_stage = details.get("to_stage", {}).get("name", "Unknown")
+
+    logger.info(
+        "🎯 Candidate '%s' moving from '%s' → '%s' in role '%s'",
+        candidate_name, from_stage, to_stage, role_name
+    )
+
+    # Step 5️⃣ – Proceed with your existing move logic
+    require_api_key(request)
+    subject = _extract_subject_from_request(request)
+    _, drive, _ = get_clients(subject)
+
+    try:
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
         if not DEPARTMENTS_FOLDER_ID:
             raise HTTPException(500, "DEPARTMENTS_FOLDER_ID not set")
 
-        role_score, role_match, _ = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_name)
+        # Resolve role
+        role_score, role_match, role_display = _resolve_best_role_by_name(
+            drive, DEPARTMENTS_FOLDER_ID, role_name
+        )
         if not role_match or role_score < _ROLE_SCORE_THRESHOLD:
             raise Exception(f"Could not resolve role '{role_name}' (score={role_score})")
 
         role_id = role_match["id"]
+
+        # Resolve candidate & stage
         stages, file_index = _build_candidate_index(drive, role_id)
         cand_score, cand_match, _ = _resolve_best_candidate_file(candidate_name, file_index)
         stage_score, stage_match, _ = _resolve_best_stage(to_stage, stages)
 
-        if not cand_match:
-            raise Exception(f"No candidate found matching '{candidate_name}'")
-        if not stage_match:
-            raise Exception(f"No stage found matching '{to_stage}'")
+        if not cand_match or not stage_match:
+            raise Exception("Candidate or stage not found")
 
         moved = False
         if cand_match["stageId"] != stage_match["id"]:
-            _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
+            _move_file_between_stages(
+                drive, cand_match["id"], cand_match["stageId"], stage_match["id"]
+            )
             moved = True
+
             await database.execute(
                 """
                 UPDATE candidates
                 SET current_stage_name = :new_stage
                 WHERE cv_name = :cv_name OR full_name = :full_name
                 """,
-                {"new_stage": stage_match["name"], "cv_name": cand_match["name"], "full_name": candidate_name}
+                {
+                    "new_stage": stage_match["name"],
+                    "cv_name": cand_match["name"],
+                    "full_name": candidate_name,
+                },
             )
 
-        return MoveByRecruiteeWebhookResponse(
-            message="Candidate moved successfully",
-            candidate_name=candidate_name,
-            role_name=role_name,
-            from_stage=from_stage,
-            to_stage=to_stage,
-            moved=moved,
-        )
+        logger.info("✅ Move complete for candidate '%s'", candidate_name)
+
+        return {
+            "message": "Candidate moved successfully",
+            "candidate_name": candidate_name,
+            "role_name": role_name,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "moved": moved,
+        }
 
     except Exception as e:
-        logger.exception("❌ Error while processing webhook")
-        return MoveByRecruiteeWebhookResponse(
-            message="Failed to process Recruitee webhook",
-            candidate_name=candidate_name,
-            role_name=role_name,
-            from_stage=from_stage,
-            to_stage=to_stage,
-            moved=False,
-            error=str(e),
-        )
+        logger.exception("❌ Error processing webhook: %s", e)
+        return {
+            "message": "Failed to process Recruitee webhook",
+            "error": str(e),
+        }
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
