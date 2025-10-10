@@ -3503,24 +3503,39 @@ async def move_by_recruitee_webhook(request: Request):
 
     # Step 6️⃣ — Extract key information from validated model
     try:
-        payload = body.attributes.payload
-        candidate = payload.candidate
-        offer = payload.offer
-        details = payload.details
-
-        candidate_name = candidate.name
-        role_name = offer.title if offer and offer.title else (offer.slug if offer else "Unknown Role")
-        from_stage = details.from_stage.name if details and details.from_stage else "Unknown"
-        to_stage = details.to_stage.name if details and details.to_stage else "Unknown"
-
+        payload = None
+    
+        # Handle dict-based attributes (test or flexible payloads)
+        if isinstance(attrs, dict):
+            payload = attrs.get("payload")
+    
+        # Handle Pydantic BaseModel attributes
+        elif hasattr(attrs, "payload"):
+            payload = getattr(attrs, "payload")
+    
+        if not payload:
+            logger.info("⚙️ No payload found in webhook — likely a test or diagnostic event.")
+            return {"message": "No actionable payload found (test or minimal webhook)."}
+    
+        # Extract inner elements safely
+        candidate = getattr(payload, "candidate", None)
+        offer = getattr(payload, "offer", None)
+        details = getattr(payload, "details", None)
+    
+        candidate_name = getattr(candidate, "name", "Unknown")
+        role_name = getattr(offer, "title", None) or getattr(offer, "slug", "Unknown Role")
+        from_stage = getattr(getattr(details, "from_stage", None), "name", "Unknown")
+        to_stage = getattr(getattr(details, "to_stage", None), "name", "Unknown")
+    
         logger.info(
             "🎯 Candidate '%s' moving from '%s' → '%s' in role '%s'",
             candidate_name, from_stage, to_stage, role_name
         )
 
-    except Exception as e:
-        logger.exception("❌ Failed to extract candidate movement details: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
+except Exception as e:
+    logger.exception("❌ Failed to extract candidate movement details: %s", e)
+    raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
+
 
     # Step 7️⃣ — Execute your main logic (role/stage resolution + Drive update)
     try:
