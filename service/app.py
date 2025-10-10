@@ -3427,26 +3427,68 @@ class MoveByRecruiteeWebhookResponse(BaseModel):
 # Endpoint
 # -------------------------------
 
-@app.post("/candidates/moveByRecruiteeWebhook", response_model=MoveByRecruiteeWebhookResponse)
-async def move_by_recruitee_webhook(request: Request, body: RecruiteeWebhookRequest):
+@app.post("/candidates/moveByRecruiteeWebhook")
+async def move_by_recruitee_webhook(request: Request):
     """
     Webhook endpoint to handle Recruitee 'candidate_moved' events.
-    Parses nested payloads correctly and performs Drive + DB move.
+    Logs the raw incoming payload to debug 422 Unprocessable Entity errors.
     """
+
+    # Step 1️⃣ – Log the raw webhook body
+    try:
+        raw_body = await request.body()
+        raw_text = raw_body.decode("utf-8")
+        logger.info("🔍 RAW WEBHOOK PAYLOAD (from Recruitee):\n%s", raw_text)
+    except Exception as e:
+        logger.exception("❌ Failed to read raw webhook body: %s", e)
+        raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
+
+    # Step 2️⃣ – Try parsing JSON manually
+    try:
+        json_data = json.loads(raw_text)
+        logger.info("✅ JSON parsed successfully. Top-level keys: %s", list(json_data.keys()))
+    except Exception as e:
+        logger.exception("❌ Failed to parse JSON payload: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    # Step 3️⃣ – Now validate against the Pydantic model
+    try:
+        body = RecruiteeWebhookRequest(**json_data)
+        logger.info("🧩 Pydantic model validated successfully for webhook ID=%s", body.id)
+    except Exception as e:
+        logger.exception("❌ Validation error in webhook payload: %s", e)
+        raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
+
+    # Step 4️⃣ – Continue with your normal business logic
     require_api_key(request)
     subject = _extract_subject_from_request(request)
     _, drive, _ = get_clients(subject)
 
     try:
         payload = body.payload
-        candidate_name = payload.candidate["name"]
-        role_name = payload.offer.get("title") or payload.offer.get("slug") or "Unknown Role"
-        from_stage = payload.details["from_stage"]["name"]
-        to_stage = payload.details["to_stage"]["name"]
+        candidate_name = payload.candidate.name
+        role_name = (
+            payload.offer.title
+            if payload.offer and payload.offer.title
+            else (payload.offer.slug if payload.offer and payload.offer.slug else "Unknown Role")
+        )
+        from_stage = (
+            payload.details.from_stage.name
+            if payload.details and payload.details.from_stage
+            else "Unknown"
+        )
+        to_stage = (
+            payload.details.to_stage.name
+            if payload.details and payload.details.to_stage
+            else "Unknown"
+        )
 
-        logger.info(f"🎯 Received webhook for candidate '{candidate_name}' moving from '{from_stage}' to '{to_stage}' in role '{role_name}'")
+        logger.info(
+            "🎯 Webhook event received for candidate '%s' moving from '%s' → '%s' in role '%s'",
+            candidate_name, from_stage, to_stage, role_name
+        )
 
-        # Step 1️⃣ Resolve the role
+        # Step 5️⃣ – Resolve Role
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
         if not DEPARTMENTS_FOLDER_ID:
             raise HTTPException(500, "DEPARTMENTS_FOLDER_ID not set")
@@ -3457,12 +3499,11 @@ async def move_by_recruitee_webhook(request: Request, body: RecruiteeWebhookRequ
 
         role_id = role_match["id"]
 
-        # Step 2️⃣ Load pipeline
+        # Step 6️⃣ – Load pipeline and resolve candidate & stage
         stages, file_index = _build_candidate_index(drive, role_id)
         if not stages:
             raise Exception(f"No Hiring Pipeline found for role '{role_name}'")
 
-        # Step 3️⃣ Fuzzy match candidate & stage
         cand_score, cand_match, cand_display = _resolve_best_candidate_file(candidate_name, file_index)
         stage_score, stage_match, stage_display = _resolve_best_stage(to_stage, stages)
 
@@ -3476,7 +3517,7 @@ async def move_by_recruitee_webhook(request: Request, body: RecruiteeWebhookRequ
             _move_file_between_stages(drive, cand_match["id"], cand_match["stageId"], stage_match["id"])
             moved = True
 
-            # Step 4️⃣ Update DB
+            # Update DB
             await database.execute(
                 """
                 UPDATE candidates
@@ -3486,26 +3527,24 @@ async def move_by_recruitee_webhook(request: Request, body: RecruiteeWebhookRequ
                 {"new_stage": stage_match["name"], "cv_name": cand_match["name"], "full_name": candidate_name}
             )
 
-        return MoveByRecruiteeWebhookResponse(
-            message="Candidate moved successfully",
-            candidate_name=candidate_name,
-            role_name=role_name,
-            from_stage=from_stage,
-            to_stage=to_stage,
-            moved=moved
-        )
+        logger.info("✅ Candidate '%s' successfully moved to '%s'", candidate_name, to_stage)
+
+        return {
+            "message": "Candidate moved successfully",
+            "candidate_name": candidate_name,
+            "role_name": role_name,
+            "from_stage": from_stage,
+            "to_stage": to_stage,
+            "moved": moved
+        }
 
     except Exception as e:
-        logger.exception("❌ Failed to process Recruitee webhook")
-        return MoveByRecruiteeWebhookResponse(
-            message="Failed to move candidate",
-            candidate_name=payload.candidate.get("name", "Unknown"),
-            role_name=payload.offer.get("title", "Unknown") if payload.offer else "Unknown",
-            from_stage=payload.details["from_stage"]["name"] if payload.details else "Unknown",
-            to_stage=payload.details["to_stage"]["name"] if payload.details else "Unknown",
-            moved=False,
-            error=str(e)
-        )
+        logger.exception("❌ Error while processing Recruitee webhook")
+        return {
+            "message": "Failed to process Recruitee webhook",
+            "error": str(e)
+        }
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
