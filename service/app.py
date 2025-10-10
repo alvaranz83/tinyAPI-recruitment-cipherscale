@@ -3532,9 +3532,9 @@ async def move_by_recruitee_webhook(request: Request):
             candidate_name, from_stage, to_stage, role_name
         )
 
-except Exception as e:
-    logger.exception("❌ Failed to extract candidate movement details: %s", e)
-    raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
+    except Exception as e:
+        logger.exception("❌ Failed to extract candidate movement details: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
 
     # Step 7️⃣ — Execute your main logic (role/stage resolution + Drive update)
