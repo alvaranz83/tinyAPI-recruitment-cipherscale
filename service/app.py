@@ -3430,11 +3430,13 @@ class MoveByRecruiteeWebhookResponse(BaseModel):
 @app.post("/candidates/moveByRecruiteeWebhook")
 async def move_by_recruitee_webhook(request: Request):
     """
-    Webhook endpoint to handle Recruitee 'candidate_moved' events.
-    Handles the nested 'attributes' JSON and logs full payloads.
+    Handles Recruitee 'candidate_moved' webhook events.
+    ✅ Logs raw payload
+    ✅ Uses full Pydantic validation for Recruitee JSON
+    ✅ Handles test events gracefully
     """
 
-    # Step 1️⃣ – Read and log the raw webhook body
+    # Step 1️⃣ — Read and log the raw body BEFORE parsing
     try:
         raw_body = await request.body()
         raw_text = raw_body.decode("utf-8")
@@ -3443,60 +3445,70 @@ async def move_by_recruitee_webhook(request: Request):
         logger.exception("❌ Failed to read webhook body: %s", e)
         raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
 
-    # Step 2️⃣ – Parse JSON manually
+    # Step 2️⃣ — Parse JSON manually first to catch bad payloads early
     try:
-        data = json.loads(raw_text)
+        json_data = json.loads(raw_text)
     except Exception as e:
-        logger.exception("❌ Invalid JSON payload: %s", e)
+        logger.exception("❌ Invalid JSON format: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
-    # Step 3️⃣ – Extract relevant data from nested structure
-    attributes = data.get("attributes", {})
-    payload = attributes.get("payload", {})
-    event_type = attributes.get("event_type")
-    event_subtype = attributes.get("event_subtype")
-
-    if not payload or not event_type:
-        logger.warning("⚠️ Missing expected fields in webhook payload.")
-        raise HTTPException(status_code=400, detail="Malformed webhook: missing attributes.payload or event_type")
-
-    logger.info("📦 Event type: %s | Subtype: %s", event_type, event_subtype)
-
-    # Step 4️⃣ – Extract candidate and movement info
-    candidate = payload.get("candidate", {})
-    offer = payload.get("offer", {})
-    details = payload.get("details", {})
-
-    candidate_name = candidate.get("name", "Unknown Candidate")
-    role_name = offer.get("title") or offer.get("slug") or "Unknown Role"
-    from_stage = details.get("from_stage", {}).get("name", "Unknown")
-    to_stage = details.get("to_stage", {}).get("name", "Unknown")
-
-    logger.info(
-        "🎯 Candidate '%s' moving from '%s' → '%s' in role '%s'",
-        candidate_name, from_stage, to_stage, role_name
-    )
-
-    # Step 5️⃣ – Proceed with your existing move logic
-    require_api_key(request)
-    subject = _extract_subject_from_request(request)
-    _, drive, _ = get_clients(subject)
-
+    # Step 3️⃣ — Validate against Pydantic model
     try:
+        body = RecruiteeWebhookRequest(**json_data)
+        logger.info("✅ Webhook validated successfully via Pydantic model.")
+    except Exception as e:
+        logger.exception("❌ Validation error while parsing webhook payload: %s", e)
+        raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
+
+    # Step 4️⃣ — Log top-level info for context
+    logger.info("📦 Event type: %s | Subtype: %s | Test: %s",
+                body.attributes.event_type,
+                body.attributes.event_subtype,
+                body.attributes.test)
+
+    # Step 5️⃣ — Handle Recruitee test events
+    if body.attributes.test:
+        logger.info("🧪 Test webhook received — skipping processing.")
+        return {"message": "Test webhook received — no action taken."}
+
+    # Step 6️⃣ — Extract key information from validated model
+    try:
+        payload = body.attributes.payload
+        candidate = payload.candidate
+        offer = payload.offer
+        details = payload.details
+
+        candidate_name = candidate.name
+        role_name = offer.title if offer and offer.title else (offer.slug if offer else "Unknown Role")
+        from_stage = details.from_stage.name if details and details.from_stage else "Unknown"
+        to_stage = details.to_stage.name if details and details.to_stage else "Unknown"
+
+        logger.info(
+            "🎯 Candidate '%s' moving from '%s' → '%s' in role '%s'",
+            candidate_name, from_stage, to_stage, role_name
+        )
+
+    except Exception as e:
+        logger.exception("❌ Failed to extract candidate movement details: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
+
+    # Step 7️⃣ — Execute your main logic (role/stage resolution + Drive update)
+    try:
+        require_api_key(request)
+        subject = _extract_subject_from_request(request)
+        _, drive, _ = get_clients(subject)
+
         DEPARTMENTS_FOLDER_ID = os.environ.get("DEPARTMENTS_FOLDER_ID")
         if not DEPARTMENTS_FOLDER_ID:
             raise HTTPException(500, "DEPARTMENTS_FOLDER_ID not set")
 
-        # Resolve role
-        role_score, role_match, role_display = _resolve_best_role_by_name(
-            drive, DEPARTMENTS_FOLDER_ID, role_name
-        )
+        # --- Role resolution ---
+        role_score, role_match, _ = _resolve_best_role_by_name(drive, DEPARTMENTS_FOLDER_ID, role_name)
         if not role_match or role_score < _ROLE_SCORE_THRESHOLD:
             raise Exception(f"Could not resolve role '{role_name}' (score={role_score})")
-
         role_id = role_match["id"]
 
-        # Resolve candidate & stage
+        # --- Candidate & stage resolution ---
         stages, file_index = _build_candidate_index(drive, role_id)
         cand_score, cand_match, _ = _resolve_best_candidate_file(candidate_name, file_index)
         stage_score, stage_match, _ = _resolve_best_stage(to_stage, stages)
@@ -3524,7 +3536,7 @@ async def move_by_recruitee_webhook(request: Request):
                 },
             )
 
-        logger.info("✅ Move complete for candidate '%s'", candidate_name)
+        logger.info("✅ Candidate '%s' successfully moved to '%s'", candidate_name, to_stage)
 
         return {
             "message": "Candidate moved successfully",
@@ -3536,7 +3548,7 @@ async def move_by_recruitee_webhook(request: Request):
         }
 
     except Exception as e:
-        logger.exception("❌ Error processing webhook: %s", e)
+        logger.exception("❌ Error while processing webhook event: %s", e)
         return {
             "message": "Failed to process Recruitee webhook",
             "error": str(e),
