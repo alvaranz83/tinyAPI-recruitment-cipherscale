@@ -3480,27 +3480,26 @@ async def move_by_recruitee_webhook(request: Request):
         logger.exception("❌ Validation error while parsing webhook payload: %s", e)
         raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
     
-    # Step 4️⃣ — Log top-level info
-    attrs = body.attributes
-    logger.info("📦 Event type: %s | Subtype: %s | Test: %s",
-                attrs.event_type, attrs.event_subtype, attrs.test)
+    # Step 4️⃣ — Safely extract attributes, whether dict or model
+    attrs = body.attributes or {}
     
-    # Step 5️⃣ — Handle test events
-    if attrs.test:
+    # Normalize for both dict and BaseModel cases
+    if isinstance(attrs, dict):
+        event_type = attrs.get("event_type")
+        event_subtype = attrs.get("event_subtype")
+        test_flag = attrs.get("test", False)
+    else:
+        event_type = getattr(attrs, "event_type", None)
+        event_subtype = getattr(attrs, "event_subtype", None)
+        test_flag = getattr(attrs, "test", False)
+    
+    logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
+    
+    # Step 5️⃣ — Handle test webhooks gracefully
+    if test_flag:
         logger.info("🧪 Test webhook received — responding 200 OK.")
-        return {"message": "Recruitee webhook verified successfully."}
+        return {"message": "Recruitee webhook verified successfully (test event)."}
 
-
-    # Step 4️⃣ — Log top-level info for context
-    logger.info("📦 Event type: %s | Subtype: %s | Test: %s",
-                body.attributes.event_type,
-                body.attributes.event_subtype,
-                body.attributes.test)
-
-    # Step 5️⃣ — Handle Recruitee test events
-    if body.attributes.test:
-        logger.info("🧪 Test webhook received — skipping processing.")
-        return {"message": "Test webhook received — no action taken."}
 
     # Step 6️⃣ — Extract key information from validated model
     try:
