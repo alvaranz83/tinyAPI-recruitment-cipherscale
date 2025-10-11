@@ -3432,12 +3432,12 @@ class RecruiteeWebhookAttributes(RecruiteeBaseModel):
 
 class RecruiteeWebhookRequest(BaseModel):
     message: Optional[str] = None
-    attributes: Optional[Any] = None  # ✅ fully flexible: can be dict or nested object
+    attributes: Optional[RecruiteeWebhookAttributes] = None  # <-- FIXED
     tags: Optional[Dict[str, Any]] = None
     timestamp: Optional[str] = None
 
     class Config:
-        extra = "allow"  # ✅ ignore anything new Recruitee adds
+        extra = "allow"
 
 
 
