@@ -3755,65 +3755,76 @@ async def new_candidate_recruitee_webhook(request: Request):
 
     # Step 7️⃣ — Persist (unchanged)
     try:
-        query = """
-            INSERT INTO candidates (
-                recruitee_event_subtype,
-                recruitee_id,
-                full_name,
-                emails,
-                phones,
-                photo_thumb_url,
-                referrer,
-                source,
-                department_id,
-                department_name,
-                job_title,
-                created_at
-            )
-            VALUES (
-                :recruitee_event_subtype,
-                :recruitee_id,
-                :full_name,
-                :emails,
-                :phones,
-                :photo_thumb_url,
-                :referrer,
-                :source,
-                :department_id,
-                :department_name,
-                :job_title,
-                NOW()
-            )
-            ON CONFLICT (recruitee_id) DO UPDATE
-            SET
-                full_name = EXCLUDED.full_name,
-                emails = EXCLUDED.emails,
-                phones = EXCLUDED.phones,
-                photo_thumb_url = EXCLUDED.photo_thumb_url,
-                referrer = EXCLUDED.referrer,
-                source = EXCLUDED.source,
-                department_id = EXCLUDED.department_id,
-                department_name = EXCLUDED.department_name,
-                job_title = EXCLUDED.job_title,
-                updated_at = NOW()
-            RETURNING id
-        """
+       # Build these earlier in your code:
+# internal_company_id: int  (your internal company id; however you resolve it)
+# recruitee_company_id: int | None  (optional, if you store it)
+# emails, phones: list[str]         (since columns are ARRAY)
 
+        query = """
+        INSERT INTO candidates (
+            company_id,
+            recruitee_company_id,
+            recruitee_event_subtype,
+            recruitee_id,
+            full_name,
+            emails,
+            phones,
+            photo_thumb_url,
+            referrer,
+            source,
+            department_id,
+            department_name,
+            job_title,
+            created_at
+        )
+        VALUES (
+            :company_id::BIGINT,
+            :recruitee_company_id::BIGINT,
+            :recruitee_event_subtype::TEXT,
+            :recruitee_id::BIGINT,
+            :full_name::TEXT,
+            :emails::TEXT[],           -- your table shows ARRAY; if you change to TEXT, cast ::TEXT and send a string
+            :phones::TEXT[],           -- same note as above
+            :photo_thumb_url::TEXT,
+            :referrer::TEXT,
+            :source::TEXT,
+            :department_id::BIGINT,
+            :department_name::TEXT,
+            :job_title::TEXT,
+            NOW()
+        )
+        ON CONFLICT (company_id, recruitee_id) DO UPDATE
+        SET
+            full_name = EXCLUDED.full_name,
+            emails = EXCLUDED.emails,
+            phones = EXCLUDED.phones,
+            photo_thumb_url = EXCLUDED.photo_thumb_url,
+            referrer = EXCLUDED.referrer,
+            source = EXCLUDED.source,
+            department_id = EXCLUDED.department_id,
+            department_name = EXCLUDED.department_name,
+            job_title = EXCLUDED.job_title,
+            updated_at = NOW()
+        RETURNING id
+        """
+        
         values = {
+            "company_id": internal_company_id,              # <-- REQUIRED for composite upsert
+            "recruitee_company_id": recruitee_company_id,   # optional; useful for audit/mapping
             "recruitee_event_subtype": event_subtype or "unknown",
             "recruitee_id": recruitee_id,
             "full_name": name,
-            "emails": emails,
-            "phones": phones,
+            "emails": emails,            # list[str], e.g. ["peter@example.com"]
+            "phones": phones,            # list[str]
             "photo_thumb_url": photo_thumb_url,
             "referrer": referrer,
             "source": source,
-            "department_id": department_id,
+            "department_id": department_id,    # int or None
             "department_name": department_name,
             "job_title": job_title,
         }
-
         new_id = await database.fetch_val(query, values)
+
         logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
 
         return {
