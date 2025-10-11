@@ -3344,8 +3344,6 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
 # ----------------------------
 # Recruitee Webhook Models (final, tolerant)
 # ----------------------------
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
 class RecruiteeBaseModel(BaseModel):
     class Config:
