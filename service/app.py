@@ -3642,7 +3642,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
     # ✅ NEW DEBUGGING SNIPPET HERE — Helps confirm attributes presence
-   logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
+        logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
     try:
         logger.info(
             "👀 attributes present? %s | type=%s",
