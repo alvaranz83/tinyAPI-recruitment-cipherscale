@@ -3637,18 +3637,21 @@ async def new_candidate_recruitee_webhook(request: Request):
 
     # Step 4️⃣ — Extract attributes safely
     attrs = body.attributes or {}
-    if isinstance(attrs, dict):
-        event_type = attrs.get("event_type")
-        event_subtype = attrs.get("event_subtype")
-        test_flag = attrs.get("test", False)
-        payload = attrs.get("payload")
-    else:
-        event_type = getattr(attrs, "event_type", None)
-        event_subtype = getattr(attrs, "event_subtype", None)
-        test_flag = getattr(attrs, "test", False)
-        payload = getattr(attrs, "payload", None)
-
+    
+    # Always normalize attrs into a dict
+    if not isinstance(attrs, dict):
+        try:
+            attrs = attrs.dict()  # Pydantic models have a .dict() method
+        except Exception:
+            attrs = {}
+    
+    event_type = attrs.get("event_type")
+    event_subtype = attrs.get("event_subtype")
+    test_flag = attrs.get("test", False)
+    payload = attrs.get("payload")
+    
     logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
+
 
     # Step 5️⃣ — Skip test webhooks
     if test_flag:
