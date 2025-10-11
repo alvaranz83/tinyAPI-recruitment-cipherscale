@@ -3423,9 +3423,12 @@ class RecruiteeWebhookPayload(RecruiteeBaseModel):
 
 
 class RecruiteeWebhookAttributes(RecruiteeBaseModel):
+    attempt_count: Optional[int]
+    created_at: Optional[str]
+    id: Optional[int]
+    level: Optional[str]
     event_type: Optional[str]
     event_subtype: Optional[str]
-    level: Optional[str]
     payload: Optional[RecruiteeWebhookPayload]
     test: Optional[bool]
 
