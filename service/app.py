@@ -3417,7 +3417,9 @@ class RecruiteeWebhookPayload(RecruiteeBaseModel):
     created_at: Optional[str]
     candidate: Optional[Candidate]
     details: Optional[CandidateMovedDetails]
-    offer: Optional[Offer]
+    # accept both plural and singular forms
+    offers: Optional[List[Offer]] = None
+    offer: Optional[Offer] = None
     company: Optional[Company]
     placement_locations: Optional[List[Location]]
 
@@ -3434,8 +3436,19 @@ class RecruiteeWebhookAttributes(RecruiteeBaseModel):
 
 
 class RecruiteeWebhookRequest(BaseModel):
+    # Some senders wrap under "attributes", some send flat—keep both
     message: Optional[str] = None
-    attributes: Optional[RecruiteeWebhookAttributes] = None  # <-- FIXED
+    attributes: Optional[RecruiteeWebhookAttributes] = None
+
+    # FLAT FIELDS (so Pydantic won’t drop them; optional and harmless)
+    id: Optional[int] = None
+    event_type: Optional[str] = None
+    event_subtype: Optional[str] = None
+    attempt_count: Optional[int] = None
+    created_at: Optional[str] = None
+    level: Optional[str] = None
+    payload: Optional[RecruiteeWebhookPayload] = None
+
     tags: Optional[Dict[str, Any]] = None
     timestamp: Optional[str] = None
 
@@ -3629,20 +3642,19 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
     # ✅ NEW DEBUGGING SNIPPET HERE — Helps confirm attributes presence
-    logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
+   logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
     try:
         logger.info(
             "👀 attributes present? %s | type=%s",
             "attributes" in json_data,
             type(json_data.get("attributes", None)).__name__,
         )
-        # Avoid dumping full attributes to prevent PII leakage
         if "attributes" in json_data and isinstance(json_data["attributes"], dict):
             logger.info("🧩 attributes keys: %s", list(json_data["attributes"].keys()))
     except Exception:
         logger.exception("Failed to introspect attributes")
 
-    # Step 3️⃣ — Validate against flexible Pydantic model
+    # Step 3️⃣ — Validate via Pydantic
     try:
         body = RecruiteeWebhookRequest(**json_data)
         logger.info("✅ Webhook validated successfully via Pydantic model.")
@@ -3650,18 +3662,44 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.exception("❌ Validation error while parsing webhook payload: %s", e)
         raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
 
+    # ✅ NEW: Normalize attributes from either wrapped-or-flat shapes
+    def normalize_attrs(json_data: Dict[str, Any], body: RecruiteeWebhookRequest) -> Optional[RecruiteeWebhookAttributes]:
+        # 1) If wrapped, just use it
+        if body.attributes is not None:
+            return body.attributes
+
+        # 2) If flat event fields exist, coerce into attributes
+        flat_has_event_bits = any(k in json_data for k in ("event_type", "event_subtype", "payload"))
+        if flat_has_event_bits:
+            try:
+                coerced_payload = None
+                if isinstance(json_data.get("payload"), dict):
+                    coerced_payload = RecruiteeWebhookPayload(**json_data["payload"])
+
+                return RecruiteeWebhookAttributes(
+                    attempt_count=json_data.get("attempt_count"),
+                    created_at=json_data.get("created_at"),
+                    id=json_data.get("id"),
+                    level=json_data.get("level"),
+                    event_type=json_data.get("event_type"),
+                    event_subtype=json_data.get("event_subtype"),
+                    payload=coerced_payload,
+                    # "test" isn’t present in your samples; default False
+                    test=json_data.get("test", False),
+                )
+            except Exception:
+                logger.exception("Could not coerce flat payload into RecruiteeWebhookAttributes")
+                return None
+
+        # 3) Nothing usable
+        return None
+
     # Step 4️⃣ — Extract attributes safely
-    attrs = body.attributes
-    if attrs is None and isinstance(json_data.get("attributes"), dict):
-        try:
-            attrs = RecruiteeWebhookAttributes(**json_data["attributes"])
-            logger.info("🛠️ Coerced attributes from raw JSON because Pydantic field was None.")
-        except Exception:
-            logger.exception("Could not coerce attributes dict into model")
+    attrs = normalize_attrs(json_data, body)
 
     if not attrs:
         logger.error(
-            "❌ Missing attributes. Raw keys=%s body_dict_keys=%s",
+            "❌ Missing attributes-equivalent. Raw keys=%s body_dict_keys=%s",
             list(json_data.keys()),
             list(body.dict().keys()),
         )
@@ -3687,10 +3725,13 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.warning("⚠️ No payload found in webhook.")
         return {"message": "No payload found."}
 
-    # Step 6️⃣ — Extract candidate + offer + department data
+    # Step 6️⃣ — Extract candidate + offer + department data (small tweak to accept offer/offs)
     try:
         candidate = getattr(payload, "candidate", None)
+        # normalize singular/plural
         offers = getattr(payload, "offers", None)
+        if not offers and getattr(payload, "offer", None):
+            offers = [payload.offer]
 
         if not candidate:
             raise Exception("Missing candidate block in webhook payload")
@@ -3709,7 +3750,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         department_name = None
         job_title = None
 
-        if offers and len(offers) > 0:
+        if offers:
             offer = offers[0]
             job_title = getattr(offer, "title", None)
             dept = getattr(offer, "department", None)
@@ -3717,16 +3758,14 @@ async def new_candidate_recruitee_webhook(request: Request):
                 department_id = getattr(dept, "id", None)
                 department_name = getattr(dept, "name", None)
 
-        logger.info(
-            "👤 New candidate: %s | Dept: %s | Job: %s | Source: %s",
-            name, department_name, job_title, source
-        )
+        logger.info("👤 New candidate: %s | Dept: %s | Job: %s | Source: %s",
+                    name, department_name, job_title, source)
 
     except Exception as e:
         logger.exception("❌ Failed extracting candidate info: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
-    # Step 7️⃣ — Persist into PostgreSQL
+    # Step 7️⃣ — Persist (unchanged)
     try:
         query = """
             INSERT INTO candidates (
