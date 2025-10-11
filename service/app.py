@@ -3756,7 +3756,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     # Step 7️⃣ — Persist (unchanged)
     try:
        # Build these earlier in your code:
-# internal_company_id: int  (your internal company id; however you resolve it)
+# company_id: int  (your internal company id; however you resolve it)
 # recruitee_company_id: int | None  (optional, if you store it)
 # emails, phones: list[str]         (since columns are ARRAY)
 
@@ -3809,7 +3809,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         """
         
         values = {
-            "company_id": internal_company_id,              # <-- REQUIRED for composite upsert
+            "company_id": company_id,              # <-- REQUIRED for composite upsert
             "recruitee_company_id": recruitee_company_id,   # optional; useful for audit/mapping
             "recruitee_event_subtype": event_subtype or "unknown",
             "recruitee_id": recruitee_id,
