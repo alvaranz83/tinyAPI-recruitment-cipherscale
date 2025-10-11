@@ -3727,8 +3727,8 @@ async def new_candidate_recruitee_webhook(request: Request):
         # Candidate core info
         recruitee_id = getattr(candidate, "id", None)
         name = getattr(candidate, "name", None)
-        emails = ",".join(getattr(candidate, "emails", []) or [])
-        phones = ",".join(getattr(candidate, "phones", []) or [])
+        emails = getattr(candidate, "emails", []) or []
+        phones = getattr(candidate, "phones", []) or []
         photo_thumb_url = getattr(candidate, "photo_thumb_url", None)
         referrer = getattr(candidate, "referrer", None)
         source = getattr(candidate, "source", None)
