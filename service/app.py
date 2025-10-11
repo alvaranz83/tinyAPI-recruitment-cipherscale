@@ -3784,18 +3784,18 @@ async def new_candidate_recruitee_webhook(request: Request):
             created_at
         )
         VALUES (
-            :company_id::BIGINT,
-            :recruitee_event_subtype::TEXT,
-            :recruitee_id::BIGINT,
-            :full_name::TEXT,
-            :emails::TEXT[],
-            :phones::TEXT[],
-            :photo_thumb_url::TEXT,
-            :referrer::TEXT,
-            :source::TEXT,
-            :department_id::BIGINT,
-            :department_name::TEXT,
-            :job_title::TEXT,
+            CAST(:company_id AS BIGINT),
+            CAST(:recruitee_event_subtype AS TEXT),
+            CAST(:recruitee_id AS BIGINT),
+            CAST(:full_name AS TEXT),
+            CAST(:emails AS TEXT[]),
+            CAST(:phones AS TEXT[]),
+            CAST(:photo_thumb_url AS TEXT),
+            CAST(:referrer AS TEXT),
+            CAST(:source AS TEXT),
+            CAST(:department_id AS BIGINT),
+            CAST(:department_name AS TEXT),
+            CAST(:job_title AS TEXT),
             NOW()
         )
         ON CONFLICT (company_id, recruitee_id) DO UPDATE
@@ -3811,6 +3811,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             job_title = EXCLUDED.job_title,
             updated_at = NOW()
         RETURNING id
+
         """
     
         values = {
