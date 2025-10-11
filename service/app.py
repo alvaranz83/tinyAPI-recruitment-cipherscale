@@ -3753,17 +3753,23 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.exception("❌ Failed extracting candidate info: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
+    
+    # --- Company ID extraction (required for upsert key) ---
+
+        company_id = None
+        if payload and getattr(payload, "company", None):
+            company_id = getattr(payload.company, "id", None)
+        
+        if company_id is None:
+            logger.error("❌ Missing company_id in Recruitee payload")
+            raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
+
+    
     # Step 7️⃣ — Persist (unchanged)
     try:
-       # Build these earlier in your code:
-# company_id: int  (your internal company id; however you resolve it)
-# recruitee_company_id: int | None  (optional, if you store it)
-# emails, phones: list[str]         (since columns are ARRAY)
-
         query = """
         INSERT INTO candidates (
             company_id,
-            recruitee_company_id,
             recruitee_event_subtype,
             recruitee_id,
             full_name,
@@ -3779,12 +3785,11 @@ async def new_candidate_recruitee_webhook(request: Request):
         )
         VALUES (
             :company_id::BIGINT,
-            :recruitee_company_id::BIGINT,
             :recruitee_event_subtype::TEXT,
             :recruitee_id::BIGINT,
             :full_name::TEXT,
-            :emails::TEXT[],           -- your table shows ARRAY; if you change to TEXT, cast ::TEXT and send a string
-            :phones::TEXT[],           -- same note as above
+            :emails::TEXT[],
+            :phones::TEXT[],
             :photo_thumb_url::TEXT,
             :referrer::TEXT,
             :source::TEXT,
@@ -3807,35 +3812,35 @@ async def new_candidate_recruitee_webhook(request: Request):
             updated_at = NOW()
         RETURNING id
         """
-        
+    
         values = {
-            "company_id": company_id,              # <-- REQUIRED for composite upsert
-            "recruitee_company_id": recruitee_company_id,   # optional; useful for audit/mapping
+            "company_id": company_id,
             "recruitee_event_subtype": event_subtype or "unknown",
             "recruitee_id": recruitee_id,
             "full_name": name,
-            "emails": emails,            # list[str], e.g. ["peter@example.com"]
-            "phones": phones,            # list[str]
+            "emails": emails,   # list[str]
+            "phones": phones,   # list[str]
             "photo_thumb_url": photo_thumb_url,
             "referrer": referrer,
             "source": source,
-            "department_id": department_id,    # int or None
+            "department_id": department_id,
             "department_name": department_name,
             "job_title": job_title,
         }
+    
         new_id = await database.fetch_val(query, values)
-
         logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
-
+    
         return {
             "message": f"Candidate '{name}' created/updated successfully.",
             "id": new_id,
             "mapping": values,
         }
-
+    
     except Exception as e:
         logger.exception("❌ Database insert failed: %s", e)
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
