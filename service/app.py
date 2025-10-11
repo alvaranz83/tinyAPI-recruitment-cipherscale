@@ -3628,6 +3628,20 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.exception("❌ Invalid JSON format: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
+    # ✅ NEW DEBUGGING SNIPPET HERE — Helps confirm attributes presence
+    logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
+    try:
+        logger.info(
+            "👀 attributes present? %s | type=%s",
+            "attributes" in json_data,
+            type(json_data.get("attributes", None)).__name__,
+        )
+        # Avoid dumping full attributes to prevent PII leakage
+        if "attributes" in json_data and isinstance(json_data["attributes"], dict):
+            logger.info("🧩 attributes keys: %s", list(json_data["attributes"].keys()))
+    except Exception:
+        logger.exception("Failed to introspect attributes")
+
     # Step 3️⃣ — Validate against flexible Pydantic model
     try:
         body = RecruiteeWebhookRequest(**json_data)
@@ -3637,16 +3651,27 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
 
     # Step 4️⃣ — Extract attributes safely
-    
     attrs = body.attributes
+    if attrs is None and isinstance(json_data.get("attributes"), dict):
+        try:
+            attrs = RecruiteeWebhookAttributes(**json_data["attributes"])
+            logger.info("🛠️ Coerced attributes from raw JSON because Pydantic field was None.")
+        except Exception:
+            logger.exception("Could not coerce attributes dict into model")
+
     if not attrs:
+        logger.error(
+            "❌ Missing attributes. Raw keys=%s body_dict_keys=%s",
+            list(json_data.keys()),
+            list(body.dict().keys()),
+        )
         raise HTTPException(status_code=400, detail="Missing attributes in webhook")
-    
+
     event_type = attrs.event_type
     event_subtype = attrs.event_subtype
     test_flag = attrs.test or False
     payload = attrs.payload
-    
+
     logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
 
     # Step 5️⃣ — Skip test webhooks
@@ -3767,25 +3792,12 @@ async def new_candidate_recruitee_webhook(request: Request):
         return {
             "message": f"Candidate '{name}' created/updated successfully.",
             "id": new_id,
-            "mapping": {
-                "recruitee_event_subtype": event_subtype,
-                "recruitee_id": recruitee_id,
-                "full_name": name,
-                "emails": emails,
-                "phones": phones,
-                "photo_thumb_url": photo_thumb_url,
-                "referrer": referrer,
-                "source": source,
-                "department_id": department_id,
-                "department_name": department_name,
-                "job_title": job_title,
-            },
+            "mapping": values,
         }
 
     except Exception as e:
         logger.exception("❌ Database insert failed: %s", e)
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
-
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
