@@ -3757,12 +3757,12 @@ async def new_candidate_recruitee_webhook(request: Request):
     ## --- Company ID extraction (required for upsert key) ---
 
     company_id = None
-        if payload and getattr(payload, "company", None):
+    if payload and getattr(payload, "company", None):
         company_id = getattr(payload.company, "id", None)
         
-        if company_id is None:
-            logger.error("❌ Missing company_id in Recruitee payload")
-            raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
+    if company_id is None:
+        logger.error("❌ Missing company_id in Recruitee payload")
+        raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
 
     
     # Step 7️⃣ — Persist (unchanged)
