@@ -3634,22 +3634,17 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
 
     # Step 4️⃣ — Extract attributes safely
-    attrs = body.attributes or {}
     
-    # Always normalize attrs into a dict
-    if not isinstance(attrs, dict):
-        try:
-            attrs = attrs.dict()  # Pydantic models have a .dict() method
-        except Exception:
-            attrs = {}
+    attrs = body.attributes
+    if not attrs:
+        raise HTTPException(status_code=400, detail="Missing attributes in webhook")
     
-    event_type = attrs.get("event_type")
-    event_subtype = attrs.get("event_subtype")
-    test_flag = attrs.get("test", False)
-    payload = attrs.get("payload")
+    event_type = attrs.event_type
+    event_subtype = attrs.event_subtype
+    test_flag = attrs.test or False
+    payload = attrs.payload
     
     logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
-
 
     # Step 5️⃣ — Skip test webhooks
     if test_flag:
