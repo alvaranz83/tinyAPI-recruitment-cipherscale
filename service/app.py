@@ -3748,15 +3748,15 @@ async def new_candidate_recruitee_webhook(request: Request):
 
         logger.info("👤 New candidate: %s | Dept: %s | Job: %s | Source: %s",
                     name, department_name, job_title, source)
-
+        
     except Exception as e:
         logger.exception("❌ Failed extracting candidate info: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
     
-    # --- Company ID extraction (required for upsert key) ---
+    ## --- Company ID extraction (required for upsert key) ---
 
-        company_id = None
+    company_id = None
         if payload and getattr(payload, "company", None):
             company_id = getattr(payload.company, "id", None)
         
