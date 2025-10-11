@@ -3758,7 +3758,7 @@ async def new_candidate_recruitee_webhook(request: Request):
 
     company_id = None
         if payload and getattr(payload, "company", None):
-            company_id = getattr(payload.company, "id", None)
+        company_id = getattr(payload.company, "id", None)
         
         if company_id is None:
             logger.error("❌ Missing company_id in Recruitee payload")
