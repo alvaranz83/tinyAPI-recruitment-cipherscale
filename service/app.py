@@ -17,6 +17,7 @@ from databases import Database
 from db import database
 from uuid import UUID
 import logging
+from pydantic.config import ConfigDict  # Pydantic v2
 
 #
 
@@ -3346,115 +3347,101 @@ async def get_candidate_documents(request: Request, body: GetCandidateDocumentsR
 # ----------------------------
 
 class RecruiteeBaseModel(BaseModel):
-    class Config:
-        extra = "allow"  # ✅ allow new or unknown fields
-
+    model_config = ConfigDict(extra="allow")  # ✅ v2 style
 
 # --- Submodels ---
 class Stage(RecruiteeBaseModel):
-    id: Optional[int]
-    name: Optional[str]
-    category: Optional[str]
-
+    id: int | None = None
+    name: str | None = None
+    category: str | None = None
 
 class Department(RecruiteeBaseModel):
-    id: Optional[int]
-    name: Optional[str]
-
+    id: int | None = None
+    name: str | None = None
 
 class Location(RecruiteeBaseModel):
-    id: Optional[int]
-    country_code: Optional[str]
-    state_code: Optional[str]
-    full_address: Optional[str]
-
+    id: int | None = None
+    country_code: str | None = None
+    state_code: str | None = None
+    full_address: str | None = None
 
 class Tag(RecruiteeBaseModel):
-    id: Optional[int]
-    name: Optional[str]
-
+    id: int | None = None
+    name: str | None = None
 
 class Offer(RecruiteeBaseModel):
-    id: Optional[int]
-    title: Optional[str]
-    kind: Optional[str]
-    slug: Optional[str]
-    department: Optional[Department]
-    locations: Optional[List[Location]]
-    created_at: Optional[str]
-    updated_at: Optional[str]
-    tags: Optional[List[Tag]]
-    status: Optional[str]
-
+    id: int | None = None
+    title: str | None = None
+    kind: str | None = None
+    slug: str | None = None
+    department: Department | None = None
+    locations: List[Location] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    tags: List[Tag] | None = None
+    status: str | None = None
 
 class Candidate(RecruiteeBaseModel):
-    id: Optional[int]
-    name: Optional[str]
-    emails: Optional[List[str]]
-    phones: Optional[List[str]]
-    photo_thumb_url: Optional[str]
-    referrer: Optional[str]
-    source: Optional[str]
-    created_at: Optional[str]
-    updated_at: Optional[str]
-    has_avatar: Optional[bool]
-    initials: Optional[str]
-
+    id: int | None = None
+    name: str | None = None
+    emails: List[str] | None = None
+    phones: List[str] | None = None
+    photo_thumb_url: str | None = None
+    referrer: str | None = None
+    source: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    has_avatar: bool | None = None
+    initials: str | None = None
 
 class CandidateMovedDetails(RecruiteeBaseModel):
-    from_stage: Optional[Stage]
-    to_stage: Optional[Stage]
-    disqualify_reason: Optional[Dict[str, Any]]
-
+    from_stage: Stage | None = None
+    to_stage: Stage | None = None
+    disqualify_reason: Dict[str, Any] | None = None
 
 class Company(RecruiteeBaseModel):
-    id: Optional[int]
-    name: Optional[str]
-
+    id: int | None = None
+    name: str | None = None
 
 class RecruiteeWebhookPayload(RecruiteeBaseModel):
-    attempt_count: Optional[int]
-    created_at: Optional[str]
-    candidate: Optional[Candidate]
-    details: Optional[CandidateMovedDetails]
-    # accept both plural and singular forms
-    offers: Optional[List[Offer]] = None
-    offer: Optional[Offer] = None
-    company: Optional[Company]
-    placement_locations: Optional[List[Location]]
-
+    attempt_count: int | None = None
+    created_at: str | None = None
+    candidate: Candidate | None = None
+    details: CandidateMovedDetails | None = None
+    offers: List[Offer] | None = None          # plural
+    offer: Offer | None = None                 # singular (other events)
+    company: Company | None = None
+    placement_locations: List[Location] | None = None
+    talent_pools: List[Any] | None = None      # ← your events include this
 
 class RecruiteeWebhookAttributes(RecruiteeBaseModel):
-    attempt_count: Optional[int]
-    created_at: Optional[str]
-    id: Optional[int]
-    level: Optional[str]
-    event_type: Optional[str]
-    event_subtype: Optional[str]
-    payload: Optional[RecruiteeWebhookPayload]
-    test: Optional[bool]
-
+    attempt_count: int | None = None
+    created_at: str | None = None
+    id: int | None = None
+    level: str | None = None
+    event_type: str | None = None
+    event_subtype: str | None = None
+    payload: RecruiteeWebhookPayload | None = None
+    test: bool | None = None
 
 class RecruiteeWebhookRequest(BaseModel):
-    # Some senders wrap under "attributes", some send flat—keep both
-    message: Optional[str] = None
-    attributes: Optional[RecruiteeWebhookAttributes] = None
+    # Wrapped shape
+    message: str | None = None
+    attributes: RecruiteeWebhookAttributes | None = None
 
-    # FLAT FIELDS (so Pydantic won’t drop them; optional and harmless)
-    id: Optional[int] = None
-    event_type: Optional[str] = None
-    event_subtype: Optional[str] = None
-    attempt_count: Optional[int] = None
-    created_at: Optional[str] = None
-    level: Optional[str] = None
-    payload: Optional[RecruiteeWebhookPayload] = None
+    # Flat shape (optional & harmless)
+    id: int | None = None
+    event_type: str | None = None
+    event_subtype: str | None = None
+    attempt_count: int | None = None
+    created_at: str | None = None
+    level: str | None = None
+    payload: RecruiteeWebhookPayload | None = None
 
-    tags: Optional[Dict[str, Any]] = None
-    timestamp: Optional[str] = None
+    tags: Dict[str, Any] | None = None
+    timestamp: str | None = None
 
-    class Config:
-        extra = "allow"
-
+    model_config = ConfigDict(extra="allow")
 
 
 # -------------------------------
@@ -3634,15 +3621,15 @@ async def new_candidate_recruitee_webhook(request: Request):
         logger.exception("❌ Failed to read webhook body: %s", e)
         raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
 
-    # Step 2️⃣ — Parse JSON manually
+    # Step 2 — Parse JSON manually
     try:
         json_data = json.loads(raw_text)
     except Exception as e:
         logger.exception("❌ Invalid JSON format: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-
-    # ✅ NEW DEBUGGING SNIPPET HERE — Helps confirm attributes presence
-        logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
+    
+    # ✅ this must be OUTSIDE the except:
+    logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
     try:
         logger.info(
             "👀 attributes present? %s | type=%s",
@@ -3653,6 +3640,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             logger.info("🧩 attributes keys: %s", list(json_data["attributes"].keys()))
     except Exception:
         logger.exception("Failed to introspect attributes")
+
 
     # Step 3️⃣ — Validate via Pydantic
     try:
