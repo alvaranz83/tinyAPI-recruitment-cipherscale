@@ -3757,8 +3757,10 @@ async def new_candidate_recruitee_webhook(request: Request):
     ## --- Company ID extraction (required for upsert key) ---
 
     company_id = None
+    company_name = None
     if payload and getattr(payload, "company", None):
         company_id = getattr(payload.company, "id", None)
+        company_name = getattr(payload.company, "name", None)
         
     if company_id is None:
         logger.error("❌ Missing company_id in Recruitee payload")
@@ -3770,6 +3772,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         query = """
         INSERT INTO candidates (
             company_id,
+            company_name,
             recruitee_event_subtype,
             recruitee_id,
             full_name,
@@ -3785,6 +3788,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         )
         VALUES (
             CAST(:company_id AS BIGINT),
+            CAST(:company_name AS TEXT),
             CAST(:recruitee_event_subtype AS TEXT),
             CAST(:recruitee_id AS BIGINT),
             CAST(:full_name AS TEXT),
@@ -3801,6 +3805,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         ON CONFLICT (company_id, recruitee_id) DO UPDATE
         SET
             full_name = EXCLUDED.full_name,
+            company_name = EXCLUDED.company_name,
             emails = EXCLUDED.emails,
             phones = EXCLUDED.phones,
             photo_thumb_url = EXCLUDED.photo_thumb_url,
@@ -3816,6 +3821,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     
         values = {
             "company_id": company_id,
+            "company_name": company_name,
             "recruitee_event_subtype": event_subtype or "unknown",
             "recruitee_id": recruitee_id,
             "full_name": name,
