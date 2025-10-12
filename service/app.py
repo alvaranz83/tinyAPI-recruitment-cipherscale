@@ -3767,23 +3767,21 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
 
     
-    # --- current_role_name ---
-    # From offers[*].title (or payload.offer.title)
+    # Always set stage to "Applied"
+    stage_name = "Applied"
     
-    # --- current_stage_name and current_role_name ---
-    stage_name = "Applied"  # default if no stage sent
-    
+    # Role name from offers[*].title (fallback to singular offer)
     role_name = None
     offers = getattr(payload, "offers", None)
     if not offers and getattr(payload, "offer", None):
         offers = [payload.offer]
-    
     if offers:
         for off in offers:
             t = getattr(off, "title", None)
             if t:
                 role_name = t
                 break
+
 
     
     # Step 7️⃣ — Persist (unchanged)
@@ -3805,7 +3803,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             current_stage_name,
             current_role_name,
             job_title,
-            status,                     
+            status,
             created_at
         )
         VALUES (
@@ -3820,29 +3818,29 @@ async def new_candidate_recruitee_webhook(request: Request):
             CAST(:referrer AS TEXT),
             CAST(:source AS TEXT),
             CAST(:department_id AS BIGINT),
-            CAST(:current_stage_name AS TEXT),
-            CAST(:current_role_name  AS TEXT),
-            CAST(:department_name AS TEXT),
-            CAST(:job_title AS TEXT),
-            CAST(:status AS TEXT),      -- added
+            CAST(:department_name AS TEXT),     -- ✅ 12th
+            CAST(:current_stage_name AS TEXT),  -- ✅ 13th
+            CAST(:current_role_name  AS TEXT),  -- ✅ 14th
+            CAST(:job_title AS TEXT),           -- ✅ 15th
+            CAST(:status AS TEXT),
             NOW()
         )
         ON CONFLICT (company_id, recruitee_id) DO UPDATE
         SET
-            company_name    = EXCLUDED.company_name,
-            full_name       = EXCLUDED.full_name,
-            emails          = EXCLUDED.emails,
-            phones          = EXCLUDED.phones,
-            photo_thumb_url = EXCLUDED.photo_thumb_url,
-            referrer        = EXCLUDED.referrer,
-            source          = EXCLUDED.source,
-            department_id   = EXCLUDED.department_id,
-            department_name = EXCLUDED.department_name,
-            current_stage_name = EXCLUDED.current_stage_name,
-            current_role_name = EXCLUDED.current_role_name,
-            job_title       = EXCLUDED.job_title,
-            status          = 'active', -- re-activate on any webhook
-            updated_at      = NOW()
+            company_name        = EXCLUDED.company_name,
+            full_name           = EXCLUDED.full_name,
+            emails              = EXCLUDED.emails,
+            phones              = EXCLUDED.phones,
+            photo_thumb_url     = EXCLUDED.photo_thumb_url,
+            referrer            = EXCLUDED.referrer,
+            source              = EXCLUDED.source,
+            department_id       = EXCLUDED.department_id,
+            department_name     = EXCLUDED.department_name,
+            current_stage_name  = EXCLUDED.current_stage_name,
+            current_role_name   = EXCLUDED.current_role_name,
+            job_title           = EXCLUDED.job_title,
+            status              = 'active',
+            updated_at          = NOW()
         RETURNING id
         """
 
@@ -3860,12 +3858,11 @@ async def new_candidate_recruitee_webhook(request: Request):
             "source": source,
             "department_id": department_id,
             "department_name": department_name,
-            "current_stage_name": stage_name,
-            "current_role_name": role_name,
+            "current_stage_name": stage_name,  # "Applied"
+            "current_role_name": role_name,    # offers.title
             "job_title": job_title,
-            "status": "active",  # always set on this endpoint
+            "status": "active",
         }
-
     
         new_id = await database.fetch_val(query, values)
         logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
