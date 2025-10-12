@@ -3754,7 +3754,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
 
     
-    ## --- Company ID extraction (required for upsert key) ---
+    ## --- Company ID & Company Name extraction (required for upsert key) ---
 
     company_id = None
     company_name = None
@@ -3765,6 +3765,21 @@ async def new_candidate_recruitee_webhook(request: Request):
     if company_id is None:
         logger.error("❌ Missing company_id in Recruitee payload")
         raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
+
+    
+    # --- current_role_name ---
+    # From offers[*].title (or payload.offer.title)
+    role_name = None
+    offers = getattr(payload, "offers", None)
+    if not offers and getattr(payload, "offer", None):
+        offers = [payload.offer]
+    
+    if offers:
+        for off in offers:
+            t = getattr(off, "title", None)
+            if t:
+                role_name = t
+                break
 
     
     # Step 7️⃣ — Persist (unchanged)
@@ -3783,8 +3798,10 @@ async def new_candidate_recruitee_webhook(request: Request):
             source,
             department_id,
             department_name,
+            current_stage_name,
+            current_role_name,
             job_title,
-            status,                     -- added
+            status,                     
             created_at
         )
         VALUES (
@@ -3799,6 +3816,8 @@ async def new_candidate_recruitee_webhook(request: Request):
             CAST(:referrer AS TEXT),
             CAST(:source AS TEXT),
             CAST(:department_id AS BIGINT),
+            CAST(:current_stage_name AS TEXT),
+            CAST(:current_role_name  AS TEXT),
             CAST(:department_name AS TEXT),
             CAST(:job_title AS TEXT),
             CAST(:status AS TEXT),      -- added
@@ -3815,6 +3834,8 @@ async def new_candidate_recruitee_webhook(request: Request):
             source          = EXCLUDED.source,
             department_id   = EXCLUDED.department_id,
             department_name = EXCLUDED.department_name,
+            current_stage_name = EXCLUDED.current_stage_name,
+            current_role_name = EXCLUDED.current_role_name,
             job_title       = EXCLUDED.job_title,
             status          = 'active', -- re-activate on any webhook
             updated_at      = NOW()
@@ -3835,6 +3856,8 @@ async def new_candidate_recruitee_webhook(request: Request):
             "source": source,
             "department_id": department_id,
             "department_name": department_name,
+            "current_stage_name": stage_name,
+            "current_role_name": role_name,
             "job_title": job_title,
             "status": "active",  # always set on this endpoint
         }
