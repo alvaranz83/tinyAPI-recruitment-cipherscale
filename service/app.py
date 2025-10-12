@@ -3769,6 +3769,10 @@ async def new_candidate_recruitee_webhook(request: Request):
     
     # --- current_role_name ---
     # From offers[*].title (or payload.offer.title)
+    
+    # --- current_stage_name and current_role_name ---
+    stage_name = "Applied"  # default if no stage sent
+    
     role_name = None
     offers = getattr(payload, "offers", None)
     if not offers and getattr(payload, "offer", None):
