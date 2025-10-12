@@ -7,7 +7,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload 
 from google.auth.exceptions import RefreshError # For user impersonation
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from difflib import SequenceMatcher
 from openai import AsyncOpenAI
 from googleapiclient.errors import HttpError
@@ -18,6 +18,7 @@ from db import database
 from uuid import UUID
 import logging
 from pydantic.config import ConfigDict  # Pydantic v2
+import urllib.parse, httpx
 
 #
 
@@ -56,6 +57,15 @@ openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_API_URL = "https://slack.com/api/chat.postMessage"
+
+
+# ========================
+# Recruitee Env VAriables
+#==========================
+
+RECRUITEE_COMPANY_ID = os.getenv("RECRUITEE_COMPANY_ID")  # e.g. "123456" or subdomain
+RECRUITEE_API_TOKEN  = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
+RECRUITEE_BASE = "https://api.recruitee.com"
 
 # ==========================
 # Fuzzy & Parse Helpers..
@@ -111,7 +121,37 @@ async def process_with_gpt(prompt: str) -> str:
         return f"❌ Error calling custom GPT Agent: {str(e)}"
 
 
-## end
+# =========================
+# Recreiute Helper Function 
+# =========================
+
+def _rb_headers() -> dict:
+    if not RECRUITEE_API_TOKEN:
+        raise HTTPException(500, "RECRUITEE_API_TOKEN not configured")
+    return {
+        "accept": "application/json",
+        "authorization": f"Bearer {RECRUITEE_API_TOKEN}",
+    }
+
+
+def _bool_to_str(b: bool | None) -> str | None:
+    if b is None:
+        return None
+    # Recruitee expects 'true' or '1' (either is fine); use 'true'/'false'
+    return "true" if b else "false"
+
+
+def _iso_no_microseconds(dt: datetime) -> str:
+    # API accepts 'yyyy-mm-ddThh:mm:ss' (seconds optional). Use seconds, no micros, always UTC if tz-aware.
+    if dt.tzinfo:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.replace(microsecond=0).isoformat()
+
+
+# ==========================
+# End of recruitee helper functions
+# =========================
+
 
 ## For importing candidates into database
 def _split_name(full_name: str):
@@ -3876,6 +3916,146 @@ async def new_candidate_recruitee_webhook(request: Request):
     except Exception as e:
         logger.exception("❌ Database insert failed: %s", e)
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+
+
+
+# ---- Pydantic query model for /recruitee/candidates ----
+class RecruiteeCandidatesQuery(BaseModel):
+    limit: int | None = 50                   # default page size
+    offset: int | None = 0
+    created_after: datetime | None = None
+    disqualified: bool | None = None
+    qualified: bool | None = None
+    ids: list[int] | None = None
+    offer_id: str | None = None
+    query: str | None = None
+    sort: str | None = "by_date"             # by_date | by_last_message
+    with_messages: bool | None = None
+    with_my_messages: bool | None = None
+
+    @field_validator("sort")
+    @classmethod
+    def _validate_sort(cls, v):
+        if v is None:
+            return v
+        allowed = {"by_date", "by_last_message"}
+        if v not in allowed:
+            raise ValueError(f"sort must be one of {allowed}")
+        return v
+
+    def to_recruitee_params(self) -> dict[str, str]:
+        p: dict[str, str] = {}
+        if self.limit is not None:  p["limit"] = str(self.limit)
+        if self.offset is not None: p["offset"] = str(self.offset)
+        if self.created_after:       p["created_after"] = _iso_no_microseconds(self.created_after)
+        if self.disqualified is not None:    p["disqualified"] = _bool_to_str(self.disqualified)
+        if self.qualified is not None:       p["qualified"] = _bool_to_str(self.qualified)
+        if self.ids:                 p["ids"] = ",".join(str(x) for x in self.ids)
+        if self.offer_id:            p["offer_id"] = self.offer_id
+        if self.query:               p["query"] = self.query
+        if self.sort:                p["sort"] = self.sort
+        if self.with_messages is not None:   p["with_messages"] = _bool_to_str(self.with_messages)
+        if self.with_my_messages is not None:p["with_my_messages"] = _bool_to_str(self.with_my_messages)
+        return p
+
+
+# GET /recruitee/candidates — proxy with query params & pagination
+@app.get("/recruitee/candidates")
+async def list_recruitee_candidates(
+    request: Request,
+    limit: int | None = Query(50, ge=1, le=200),
+    offset: int | None = Query(0, ge=0),
+    created_after: datetime | None = Query(None, description="ISO datetime, e.g. 2025-10-01T00:00:00"),
+    disqualified: bool | None = Query(None),
+    qualified: bool | None = Query(None),
+    ids: str | None = Query(None, description="Comma-separated IDs, or repeat ?ids=... via list endpoint below"),
+    offer_id: str | None = Query(None),
+    q: str | None = Query(None, alias="query"),
+    sort: str | None = Query("by_date"),
+    with_messages: bool | None = Query(None),
+    with_my_messages: bool | None = Query(None),
+):
+    """
+    Proxy to Recruitee: GET /c/{company_id}/candidates
+    Mirrors Recruitee's query params. Requires x-api-key.
+    """
+    require_api_key(request)
+    if not RECRUITEE_COMPANY_ID:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
+
+    # Support both comma string and repeated list forms:
+    ids_list: list[int] | None = None
+    if ids:
+        try:
+            ids_list = [int(x) for x in ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(400, "ids must be comma-separated integers")
+
+    qmodel = RecruiteeCandidatesQuery(
+        limit=limit,
+        offset=offset,
+        created_after=created_after,
+        disqualified=disqualified,
+        qualified=qualified,
+        ids=ids_list,
+        offer_id=offer_id,
+        query=q,
+        sort=sort,
+        with_messages=with_messages,
+        with_my_messages=with_my_messages,
+    )
+
+    params = qmodel.to_recruitee_params()
+    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers(), params=params)
+        if resp.status_code >= 400:
+            logger.error("Recruitee error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        data = resp.json()
+        # Optional: bubble up paging hints
+        return {
+            "message": "OK",
+            "company_id": RECRUITEE_COMPANY_ID,
+            "params": params,
+            "result": data,
+        }
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+    except Exception as e:
+        logger.exception("Recruitee call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
+
+
+
+# GET /recruitee/candidates/{candidate_id} — fetch single candidate
+@app.get("/recruitee/candidates/{candidate_id}")
+async def get_recruitee_candidate(
+    request: Request,
+    candidate_id: int,
+):
+    """
+    Proxy to Recruitee: GET /c/{company_id}/candidates/{candidate_id}
+    """
+    require_api_key(request)
+    if not RECRUITEE_COMPANY_ID:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
+
+    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates/{candidate_id}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers())
+        if resp.status_code >= 400:
+            logger.error("Recruitee error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        return resp.json()
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+    except Exception as e:
+        logger.exception("Recruitee call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
 
 
 
