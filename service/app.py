@@ -3784,6 +3784,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             department_id,
             department_name,
             job_title,
+            status,                     -- added
             created_at
         )
         VALUES (
@@ -3800,24 +3801,26 @@ async def new_candidate_recruitee_webhook(request: Request):
             CAST(:department_id AS BIGINT),
             CAST(:department_name AS TEXT),
             CAST(:job_title AS TEXT),
+            CAST(:status AS TEXT),      -- added
             NOW()
         )
         ON CONFLICT (company_id, recruitee_id) DO UPDATE
         SET
-            full_name = EXCLUDED.full_name,
-            company_name = EXCLUDED.company_name,
-            emails = EXCLUDED.emails,
-            phones = EXCLUDED.phones,
+            company_name    = EXCLUDED.company_name,
+            full_name       = EXCLUDED.full_name,
+            emails          = EXCLUDED.emails,
+            phones          = EXCLUDED.phones,
             photo_thumb_url = EXCLUDED.photo_thumb_url,
-            referrer = EXCLUDED.referrer,
-            source = EXCLUDED.source,
-            department_id = EXCLUDED.department_id,
+            referrer        = EXCLUDED.referrer,
+            source          = EXCLUDED.source,
+            department_id   = EXCLUDED.department_id,
             department_name = EXCLUDED.department_name,
-            job_title = EXCLUDED.job_title,
-            updated_at = NOW()
+            job_title       = EXCLUDED.job_title,
+            status          = 'active', -- re-activate on any webhook
+            updated_at      = NOW()
         RETURNING id
-
         """
+
     
         values = {
             "company_id": company_id,
@@ -3825,15 +3828,17 @@ async def new_candidate_recruitee_webhook(request: Request):
             "recruitee_event_subtype": event_subtype or "unknown",
             "recruitee_id": recruitee_id,
             "full_name": name,
-            "emails": emails,   # list[str]
-            "phones": phones,   # list[str]
+            "emails": emails,
+            "phones": phones,
             "photo_thumb_url": photo_thumb_url,
             "referrer": referrer,
             "source": source,
             "department_id": department_id,
             "department_name": department_name,
             "job_title": job_title,
+            "status": "active",  # always set on this endpoint
         }
+
     
         new_id = await database.fetch_val(query, values)
         logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
