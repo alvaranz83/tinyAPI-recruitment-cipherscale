@@ -65,7 +65,7 @@ SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 
 RECRUITEE_COMPANY_ID = os.getenv("RECRUITEE_COMPANY_ID")  # e.g. "123456" or subdomain
 RECRUITEE_API_TOKEN  = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
-RECRUITEE_BASE = "https://api.recruitee.com"
+RECRUITEE_BASE = os.getenv("RECRUITEE_BASE") # Recruitee Company name base url
 
 # ==========================
 # Fuzzy & Parse Helpers..
