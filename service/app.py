@@ -21,7 +21,7 @@ from pydantic.config import ConfigDict  # Pydantic v2
 import urllib.parse, httpx
 
 #
-
+#
 app = FastAPI(title="Recruiting Sheet Insights")
 
 @app.on_event("startup")
