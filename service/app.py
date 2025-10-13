@@ -4120,6 +4120,70 @@ async def get_positions(
         raise HTTPException(502, f"Upstream error: {e}")
 
 
+# ---- Pydantic model (optional, retained for structure consistency) ----
+class DepartmentsQuery(BaseModel):
+    company_id: str
+
+    def to_recruitee_url(self) -> str:
+        # Allows passing either numeric ID or subdomain
+        return f"https://api.recruitee.com/c/{self.company_id}/departments"
+
+
+@app.get("/departments/get")
+async def get_departments(request: Request):
+    """
+    Fetches all company departments from Recruitee.
+    Mirrors Recruitee's GET /departments endpoint.
+    Automatically uses RECRUITEE_COMPANY_ID from environment.
+    """
+
+    require_api_key(request)
+
+    # ✅ Get company_id from environment
+    company_id = RECRUITEE_COMPANY_ID
+    if not company_id:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured in environment")
+
+    qmodel = DepartmentsQuery(company_id=company_id)
+    url = qmodel.to_recruitee_url()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers())
+
+        if resp.status_code >= 400:
+            logger.error("Recruitee /departments error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        data = resp.json()
+
+        # ✅ Normalize the Recruitee response
+        departments = [
+            {
+                "name": d.get("name"),
+                "offers_count": d.get("offers_count", 0),
+                "status": d.get("status"),
+            }
+            for d in data.get("departments", [])
+        ]
+
+        return {
+            "message": "OK",
+            "company_id": company_id,
+            "result": {
+                "departments": departments,
+            },
+        }
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+
+    except Exception as e:
+        logger.exception("Recruitee /departments call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
+
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
