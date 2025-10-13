@@ -4058,6 +4058,67 @@ async def get_recruitee_candidate(
         raise HTTPException(502, f"Upstream error: {e}")
 
 
+# ---- Pydantic query model for /positions/get ----
+class PositionsQuery(BaseModel):
+    department: str | None = None
+    tag: str | None = None
+
+    def to_recruitee_params(self) -> dict[str, str]:
+        p: dict[str, str] = {}
+        if self.department:
+            p["department"] = self.department
+        if self.tag:
+            p["tag"] = self.tag
+        return p
+
+
+@app.get("/positions/get")
+async def get_positions(
+    request: Request,
+    department: str | None = Query(None, description="Filters job offers by department name"),
+    tag: str | None = Query(None, description="Filters job offers by tag name"),
+):
+    """
+    Fetches open job positions (offers) from Recruitee.
+    Mirrors Recruitee's GET /offers endpoint.
+    Supports filtering by department or tag.
+    """
+    require_api_key(request)
+
+    # ✅ Use the correct Recruitee base URL format
+    # Example: RECRUITEE_BASE = "https://cipherscale.recruitee.com"
+    if not RECRUITEE_BASE:
+        raise HTTPException(500, "RECRUITEE_BASE not configured")
+
+    qmodel = PositionsQuery(department=department, tag=tag)
+    params = qmodel.to_recruitee_params()
+
+    # ✅ FIXED: Correct endpoint path
+    url = f"{RECRUITEE_BASE}/api/offers"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers(), params=params)
+
+        if resp.status_code >= 400:
+            logger.error("Recruitee /offers error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        data = resp.json()
+        return {
+            "message": "OK",
+            "company_domain": RECRUITEE_BASE,
+            "params": params,
+            "result": data,
+        }
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+
+    except Exception as e:
+        logger.exception("Recruitee /offers call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
+
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
