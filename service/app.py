@@ -479,8 +479,6 @@ def _upload_as_google_doc(drive, docs, parent_id: str, doc_name: str, file: Uplo
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-router = APIRouter()
-
 
 # 
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
