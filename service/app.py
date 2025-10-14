@@ -4079,21 +4079,18 @@ async def get_positions(
     tag: str | None = Query(None, description="Filters job offers by tag name"),
 ):
     """
-    Fetches open job positions (offers) from Recruitee.
-    Mirrors Recruitee's GET /offers endpoint.
-    Supports filtering by department or tag.
+    Fetches published job positions (offers) from Recruitee.
+    Mirrors Recruitee's GET /offers endpoint but filters only 'published' offers.
+    Returns the full JSON payload for those offers.
     """
     require_api_key(request)
 
-    # ✅ Use the correct Recruitee base URL format
-    # Example: RECRUITEE_BASE = "https://cipherscale.recruitee.com"
     if not RECRUITEE_BASE:
         raise HTTPException(500, "RECRUITEE_BASE not configured")
 
     qmodel = PositionsQuery(department=department, tag=tag)
     params = qmodel.to_recruitee_params()
 
-    # ✅ FIXED: Correct endpoint path
     url = f"{RECRUITEE_BASE}/api/offers"
 
     try:
@@ -4105,11 +4102,20 @@ async def get_positions(
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
         data = resp.json()
+        offers = data.get("offers", [])
+
+        # ✅ Only keep published offers, but don't trim any fields
+        published_offers = [offer for offer in offers if offer.get("status") == "published"]
+
+        # Replace offers list with filtered version
+        data["offers"] = published_offers
+
         return {
             "message": "OK",
             "company_domain": RECRUITEE_BASE,
             "params": params,
-            "result": data,
+            "total_published": len(published_offers),
+            "result": data,  # full Recruitee response but filtered
         }
 
     except httpx.TimeoutException:
@@ -4119,14 +4125,6 @@ async def get_positions(
         logger.exception("Recruitee /offers call failed")
         raise HTTPException(502, f"Upstream error: {e}")
 
-
-# ---- Pydantic model (optional, retained for structure consistency) ----
-class DepartmentsQuery(BaseModel):
-    company_id: str
-
-    def to_recruitee_url(self) -> str:
-        # Allows passing either numeric ID or subdomain
-        return f"https://api.recruitee.com/c/{self.company_id}/departments"
 
 
 @app.get("/departments/get")
