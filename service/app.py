@@ -4065,7 +4065,7 @@ class PositionsQuery(BaseModel):
     scope: str | None = Field(
         None,
         description=(
-            "Offer scope filter: 'archived', 'active', or 'not_archived'. "
+            "Offer scope filter: 'archived', 'published', or 'not_archived'. "
             "If omitted, lists all job offers."
         ),
     )
@@ -4088,7 +4088,7 @@ async def get_positions(
     request: Request,
     scope: str | None = Query(
         None,
-        description="Offer scope filter: 'archived', 'active', or 'not_archived'.",
+        description="Offer scope filter: 'archived', 'published', or 'not_archived'.",
     ),
     view_mode: str | None = Query(
         "default",
