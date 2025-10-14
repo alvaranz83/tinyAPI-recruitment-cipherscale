@@ -4148,7 +4148,7 @@ class DepartmentsQuery(BaseModel):
     company_id: str
 
     def to_recruitee_url(self) -> str:
-        return f"https://api.recruitee.com/c/{company_id}/departments"
+        return f"https://api.recruitee.com/c/{self.company_id}/departments"
 
 
 @app.get("/departments/get")
