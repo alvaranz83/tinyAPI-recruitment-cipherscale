@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body, APIRouter
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
@@ -4065,7 +4065,7 @@ class PositionsQuery(BaseModel):
     scope: str | None = Field(
         None,
         description=(
-            "Offer scope filter: 'archived', 'published', or 'not_archived'. "
+            "Offer scope filter: 'archived', 'active', or 'not_archived'. "
             "If omitted, lists all job offers."
         ),
     )
@@ -4083,12 +4083,12 @@ class PositionsQuery(BaseModel):
         return params
 
 
-@router.get("/positions/get")
+@app.get("/positions/get")
 async def get_positions(
     request: Request,
     scope: str | None = Query(
         None,
-        description="Offer scope filter: 'archived', 'published', or 'not_archived'.",
+        description="Offer scope filter: 'archived', 'active', or 'not_archived'.",
     ),
     view_mode: str | None = Query(
         "default",
