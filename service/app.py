@@ -4142,8 +4142,13 @@ async def get_positions(
         logger.exception("Recruitee /offers call failed")
         raise HTTPException(502, f"Upstream error: {e}")
 
+# ---- Pydantic query model for /departments/get ----
 
+class DepartmentsQuery(BaseModel):
+    company_id: str
 
+    def to_recruitee_url(self) -> str:
+        return f"https://api.recruitee.com/c/{company_id}/departments"
 
 
 @app.get("/departments/get")
