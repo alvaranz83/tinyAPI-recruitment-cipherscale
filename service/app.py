@@ -66,6 +66,7 @@ SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 RECRUITEE_COMPANY_ID = os.getenv("RECRUITEE_COMPANY_ID")  # e.g. "123456" or subdomain
 RECRUITEE_API_TOKEN  = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
 RECRUITEE_BASE = os.getenv("RECRUITEE_BASE") # Recruitee Company name base url
+RECRUITEE_API_URL = os.getenv("RECRUITEE_API_URL") # Recruitee API URL
 
 # ==========================
 # Fuzzy & Parse Helpers..
@@ -4106,7 +4107,7 @@ async def get_positions(
         raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
 
     # ✅ Correct endpoint URL
-    url = f"{RECRUITEE_BASE}/c/{RECRUITEE_COMPANY_ID}/offers"
+    url = f"{RECRUITEE_API_URL}/c/{RECRUITEE_COMPANY_ID}/offers"
 
     qmodel = PositionsQuery(scope=scope, view_mode=view_mode)
     params = qmodel.to_recruitee_params()
