@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
@@ -478,6 +478,7 @@ def _upload_as_google_doc(drive, docs, parent_id: str, doc_name: str, file: Uplo
 # Configure logging once (top of file)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+router = APIRouter()
 
 
 # 
@@ -4060,38 +4061,55 @@ async def get_recruitee_candidate(
 
 # ---- Pydantic query model for /positions/get ----
 class PositionsQuery(BaseModel):
-    department: str | None = None
-    tag: str | None = None
+    scope: str | None = Field(
+        None,
+        description=(
+            "Offer scope filter: 'archived', 'active', or 'not_archived'. "
+            "If omitted, lists all job offers."
+        ),
+    )
+    view_mode: str | None = Field(
+        "default",
+        description="Controls level of details: 'default' (detailed) or 'brief' (minimal).",
+    )
 
     def to_recruitee_params(self) -> dict[str, str]:
-        p: dict[str, str] = {}
-        if self.department:
-            p["department"] = self.department
-        if self.tag:
-            p["tag"] = self.tag
-        return p
+        params: dict[str, str] = {}
+        if self.scope:
+            params["scope"] = self.scope
+        if self.view_mode:
+            params["view_mode"] = self.view_mode
+        return params
 
 
-@app.get("/positions/get")
+@router.get("/positions/get")
 async def get_positions(
     request: Request,
-    department: str | None = Query(None, description="Filters job offers by department name"),
-    tag: str | None = Query(None, description="Filters job offers by tag name"),
+    scope: str | None = Query(
+        None,
+        description="Offer scope filter: 'archived', 'active', or 'not_archived'.",
+    ),
+    view_mode: str | None = Query(
+        "default",
+        description="Level of detail for the response: 'default' or 'brief'.",
+    ),
 ):
     """
-    Fetches published job positions (offers) from Recruitee.
-    Mirrors Recruitee's GET /offers endpoint but filters only 'published' offers.
-    Returns the full JSON payload for those offers.
+    Fetches job positions (offers) from Recruitee.
+    Mirrors Recruitee's GET /c/{company_id}/offers endpoint,
+    returning only offers with 'status' == 'published'.
     """
+
     require_api_key(request)
 
-    if not RECRUITEE_BASE:
-        raise HTTPException(500, "RECRUITEE_BASE not configured")
+    if not RECRUITEE_COMPANY_ID:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
 
-    qmodel = PositionsQuery(department=department, tag=tag)
+    # ✅ Correct endpoint URL
+    url = f"{RECRUITEE_BASE}/c/{RECRUITEE_COMPANY_ID}/offers"
+
+    qmodel = PositionsQuery(scope=scope, view_mode=view_mode)
     params = qmodel.to_recruitee_params()
-
-    url = f"{RECRUITEE_BASE}/api/offers"
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -4104,7 +4122,7 @@ async def get_positions(
         data = resp.json()
         offers = data.get("offers", [])
 
-        # ✅ Only keep published offers, but don't trim any fields
+        # ✅ Keep only published offers
         published_offers = [offer for offer in offers if offer.get("status") == "published"]
 
         # Replace offers list with filtered version
@@ -4112,10 +4130,10 @@ async def get_positions(
 
         return {
             "message": "OK",
-            "company_domain": RECRUITEE_BASE,
+            "url": url,
             "params": params,
             "total_published": len(published_offers),
-            "result": data,  # full Recruitee response but filtered
+            "result": data,
         }
 
     except httpx.TimeoutException:
@@ -4124,6 +4142,8 @@ async def get_positions(
     except Exception as e:
         logger.exception("Recruitee /offers call failed")
         raise HTTPException(502, f"Upstream error: {e}")
+
+
 
 
 
