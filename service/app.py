@@ -3919,94 +3919,108 @@ async def new_candidate_recruitee_webhook(request: Request):
 
 
 
-# ---- Pydantic query model for /recruitee/candidates ----
-class RecruiteeCandidatesQuery(BaseModel):
-    limit: int | None = 50                   # default page size
-    offset: int | None = 0
-    created_after: datetime | None = None
-    disqualified: bool | None = None
-    qualified: bool | None = None
-    ids: list[int] | None = None
-    offer_id: str | None = None
-    query: str | None = None
-    sort: str | None = "by_date"             # by_date | by_last_message
-    with_messages: bool | None = None
-    with_my_messages: bool | None = None
+def require_api_key(request: Request):
+    if "x-api-key" not in request.headers:
+        raise HTTPException(401, "Missing x-api-key header")
 
-    @field_validator("sort")
+def _bool_to_str(value: bool) -> str:
+    return "true" if value else "false"
+
+def _unix_timestamp(dt: datetime) -> int:
+    return int(dt.timestamp())
+
+def _rb_headers():
+    return {"Authorization": f"Bearer YOUR_API_KEY", "Accept": "application/json"}
+
+
+
+# ---- Pydantic query model for /recruitee/search/new/candidates ----
+class RecruiteeSearchCandidatesQuery(BaseModel):
+    limit: int | None = 60
+    page: int | None = 1
+    filters_json: list[dict] | None = None
+    sort_by: str | None = "created_at_desc"
+
+    @field_validator("sort_by")
     @classmethod
-    def _validate_sort(cls, v):
+    def _validate_sort_by(cls, v):
         if v is None:
             return v
-        allowed = {"by_date", "by_last_message"}
+        allowed = {
+            "relevance_asc", "relevance_desc",
+            "created_at_asc", "created_at_desc",
+            "candidate_name_asc", "candidate_name_desc",
+            "candidate_rating_asc", "candidate_rating_desc",
+            "candidate_positive_ratings_asc", "candidate_positive_ratings_desc",
+            "candidate_job_title_asc", "candidate_job_title_desc",
+            "candidate_stage_name_asc", "candidate_stage_name_desc",
+            "gdpr_expires_at_asc", "gdpr_expires_at_desc",
+        }
         if v not in allowed:
-            raise ValueError(f"sort must be one of {allowed}")
+            raise ValueError(f"sort_by must be one of {allowed}")
         return v
 
     def to_recruitee_params(self) -> dict[str, str]:
-        p: dict[str, str] = {}
-        if self.limit is not None:  p["limit"] = str(self.limit)
-        if self.offset is not None: p["offset"] = str(self.offset)
-        if self.created_after:       p["created_after"] = _iso_no_microseconds(self.created_after)
-        if self.disqualified is not None:    p["disqualified"] = _bool_to_str(self.disqualified)
-        if self.qualified is not None:       p["qualified"] = _bool_to_str(self.qualified)
-        if self.ids:                 p["ids"] = ",".join(str(x) for x in self.ids)
-        if self.offer_id:            p["offer_id"] = self.offer_id
-        if self.query:               p["query"] = self.query
-        if self.sort:                p["sort"] = self.sort
-        if self.with_messages is not None:   p["with_messages"] = _bool_to_str(self.with_messages)
-        if self.with_my_messages is not None:p["with_my_messages"] = _bool_to_str(self.with_my_messages)
-        return p
+        params: dict[str, str] = {}
+        if self.limit is not None:
+            params["limit"] = str(min(self.limit, 10000))
+        if self.page is not None:
+            params["page"] = str(self.page)
+        if self.filters_json:
+            params["filters_json"] = json.dumps(self.filters_json)
+        if self.sort_by:
+            params["sort_by"] = self.sort_by
+        return params
 
 
-# GET /recruitee/candidates — proxy with query params & pagination
-@app.get("/recruitee/candidates")
-async def list_recruitee_candidates(
+
+# ---- GET /recruitee/search/new/candidates ----
+@app.get("/recruitee/search/new/candidates")
+async def list_recruitee_candidates_new(
     request: Request,
-    limit: int | None = Query(50, ge=1, le=200),
-    offset: int | None = Query(0, ge=0),
-    created_after: datetime | None = Query(None, description="ISO datetime, e.g. 2025-10-01T00:00:00"),
-    disqualified: bool | None = Query(None),
-    qualified: bool | None = Query(None),
-    ids: str | None = Query(None, description="Comma-separated IDs, or repeat ?ids=... via list endpoint below"),
-    offer_id: str | None = Query(None),
-    q: str | None = Query(None, alias="query"),
-    sort: str | None = Query("by_date"),
-    with_messages: bool | None = Query(None),
-    with_my_messages: bool | None = Query(None),
+    limit: int | None = Query(60, ge=1, le=10000),
+    page: int | None = Query(1, ge=1),
+    sort_by: str | None = Query("created_at_desc"),
+    has_cv: bool | None = Query(None, description="Filter only candidates with CVs"),
+    created_after: datetime | None = Query(None, description="Filter candidates created after this date"),
+    created_before: datetime | None = Query(None, description="Filter candidates created before this date"),
+    source: str | None = Query(None, description="Candidate source, e.g., career_site, email, manual"),
 ):
     """
-    Proxy to Recruitee: GET /c/{company_id}/candidates
-    Mirrors Recruitee's query params. Requires x-api-key.
+    Proxy to Recruitee: GET /c/{company_id}/search/new/candidates
+    Uses JSON-based filters for performance and flexibility.
     """
+
     require_api_key(request)
     if not RECRUITEE_COMPANY_ID:
         raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
 
-    # Support both comma string and repeated list forms:
-    ids_list: list[int] | None = None
-    if ids:
-        try:
-            ids_list = [int(x) for x in ids.split(",") if x.strip()]
-        except ValueError:
-            raise HTTPException(400, "ids must be comma-separated integers")
+    # Build filter list dynamically
+    filters = []
 
-    qmodel = RecruiteeCandidatesQuery(
+    if has_cv is not None:
+        filters.append({"field": "has_cv", "eq": has_cv})
+
+    if created_after or created_before:
+        filter_time = {"field": "created_at"}
+        if created_after:
+            filter_time["gte"] = _unix_timestamp(created_after)
+        if created_before:
+            filter_time["lte"] = _unix_timestamp(created_before)
+        filters.append(filter_time)
+
+    if source:
+        filters.append({"field": "source", "in": [source]})
+
+    qmodel = RecruiteeSearchCandidatesQuery(
         limit=limit,
-        offset=offset,
-        created_after=created_after,
-        disqualified=disqualified,
-        qualified=qualified,
-        ids=ids_list,
-        offer_id=offer_id,
-        query=q,
-        sort=sort,
-        with_messages=with_messages,
-        with_my_messages=with_my_messages,
+        page=page,
+        filters_json=filters if filters else None,
+        sort_by=sort_by,
     )
 
     params = qmodel.to_recruitee_params()
-    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates"
+    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/search/new/candidates"
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -4015,11 +4029,12 @@ async def list_recruitee_candidates(
             logger.error("Recruitee error %s: %s", resp.status_code, resp.text)
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
         data = resp.json()
-        # Optional: bubble up paging hints
         return {
             "message": "OK",
             "company_id": RECRUITEE_COMPANY_ID,
             "params": params,
+            "filters_applied": filters,
+            "result_count": len(data.get("candidates", [])),
             "result": data,
         }
     except httpx.TimeoutException:
