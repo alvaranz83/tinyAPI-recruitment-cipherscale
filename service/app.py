@@ -64,7 +64,7 @@ SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 #==========================
 
 RECRUITEE_COMPANY_ID = os.getenv("RECRUITEE_COMPANY_ID")  # e.g. "123456" or subdomain
-RECRUITEE_API_TOKEN  = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
+RECRUITEE_API_TOKEN = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
 RECRUITEE_BASE = os.getenv("RECRUITEE_BASE") # Recruitee Company name base url
 RECRUITEE_API_URL = os.getenv("RECRUITEE_API_URL") # Recruitee API URL
 
@@ -123,7 +123,7 @@ async def process_with_gpt(prompt: str) -> str:
 
 
 # =========================
-# Recreiute Helper Function 
+# Recruitee Helper Function 
 # =========================
 
 def _rb_headers() -> dict:
@@ -147,6 +147,14 @@ def _iso_no_microseconds(dt: datetime) -> str:
     if dt.tzinfo:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt.replace(microsecond=0).isoformat()
+
+def require_api_key(request: Request):
+    if "x-api-key" not in request.headers:
+        raise HTTPException(401, "Missing x-api-key header")
+
+
+def _unix_timestamp(dt: datetime) -> int:
+    return int(dt.timestamp())
 
 
 # ==========================
@@ -3916,21 +3924,6 @@ async def new_candidate_recruitee_webhook(request: Request):
     except Exception as e:
         logger.exception("❌ Database insert failed: %s", e)
         raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
-
-
-
-def require_api_key(request: Request):
-    if "x-api-key" not in request.headers:
-        raise HTTPException(401, "Missing x-api-key header")
-
-def _bool_to_str(value: bool) -> str:
-    return "true" if value else "false"
-
-def _unix_timestamp(dt: datetime) -> int:
-    return int(dt.timestamp())
-
-def _rb_headers():
-    return {"Authorization": f"Bearer YOUR_API_KEY", "Accept": "application/json"}
 
 
 
