@@ -4020,7 +4020,7 @@ async def list_recruitee_candidates_new(
     )
 
     params = qmodel.to_recruitee_params()
-    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/search/new/candidates"
+    url = f"{RECRUITEE_API_URL}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/search/new/candidates"
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
