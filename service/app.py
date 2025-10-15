@@ -4089,6 +4089,111 @@ async def get_position_by_id(
         raise HTTPException(502, f"Upstream error: {e}")
 
 
+# ======================================================
+# Create Job Offer (Recruitee Integration)
+# ======================================================
+
+class CreateJobOfferRequest(BaseModel):
+    title: str
+    description: str
+    requirements: str
+    department_id: Optional[str] = None
+    location_ids: List[int]
+    kind: str = "job"  # job | talent_pool
+    on_site: bool = False
+    hybrid: bool = False
+    remote: bool = True
+    visibility_options: List[str] = ["locations_question"]
+    locations_question: str = "What is your preferred work location?"
+    locations_question_type: str = "multiple_choice"
+    locations_question_required: bool = True
+    userEmail: Optional[str] = None
+    dryRun: bool = False
+
+
+@app.post("/positions/createJobOffer")
+async def create_job_offer(request: Request, body: CreateJobOfferRequest):
+    """
+    Creates a new Job Offer in Recruitee.
+    No local DB insert — Recruitee is the system of record.
+    """
+
+    # 🔐 Security
+    require_api_key(request)
+
+    # ✅ Configuration validation
+    if not RECRUITEE_COMPANY_ID or not RECRUITEE_API_TOKEN or not RECRUITEE_API_URL:
+        raise HTTPException(status_code=500, detail="Recruitee credentials not configured properly.")
+
+    subject = body.userEmail or "system"
+
+    # 🧪 Dry Run Mode
+    if body.dryRun:
+        return {
+            "message": f"[dryRun] Would create Job Offer '{body.title}' "
+                       f"in department '{body.department_id or 'N/A'}' (by {subject})",
+            "created": False,
+            "offer_id": None,
+            "offer_url": None
+        }
+
+    # ✅ Prepare payload
+    payload = {
+        "title": body.title,
+        "kind": body.kind,
+        "location_ids": body.location_ids,
+        "description": body.description,
+        "requirements": body.requirements,
+        "department_id": body.department_id,
+        "on_site": body.on_site,
+        "hybrid": body.hybrid,
+        "remote": body.remote,
+        "visibility_options": body.visibility_options,
+        "locations_question": body.locations_question,
+        "locations_question_type": body.locations_question_type,
+        "locations_question_required": body.locations_question_required,
+    }
+
+    headers = {
+        "accept": "application/json",
+        "authorization": f"Bearer {RECRUITEE_API_TOKEN}",
+        "content-type": "application/json"
+    }
+
+    # ✅ Call Recruitee API
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{RECRUITEE_API_URL}/c/{RECRUITEE_COMPANY_ID}/offers",
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+
+        if response.status_code != 201:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Failed to create Job Offer in Recruitee: {response.text}"
+            )
+
+        data = response.json()
+        offer = data.get("offer", {})
+
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, detail=f"Network error calling Recruitee: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+    # ✅ Success Response
+    return {
+        "message": f"✅ Job Offer '{body.title}' created successfully in Recruitee",
+        "offer_id": offer.get("id"),
+        "offer_url": offer.get("careers_url"),
+        "created": True
+    }
+
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
