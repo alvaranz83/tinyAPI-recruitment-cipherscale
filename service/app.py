@@ -4043,6 +4043,52 @@ async def get_departments(request: Request):
 
 
 
+# ---- GET /positions/get/{offer_id} ----
+@app.get("/positions/get/{offer_id}")
+async def get_position_by_id(
+    request: Request,
+    offer_id: str = Path(..., description="The ID of the Recruitee job offer to fetch"),
+):
+    """
+    Fetch a single job offer (position) from Recruitee by its ID.
+    Mirrors Recruitee's GET /c/{company_id}/offers/{id} endpoint.
+    """
+
+    require_api_key(request)
+
+    if not RECRUITEE_COMPANY_ID:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
+
+    # ✅ Build the Recruitee API URL
+    url = f"{RECRUITEE_API_URL}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/offers/{offer_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers())
+
+        # Handle HTTP errors gracefully
+        if resp.status_code >= 400:
+            logger.error("Recruitee /offers/{id} error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        data = resp.json()
+
+        # ✅ Normalize the response to match your API schema
+        offer = data.get("offer") or data  # some versions wrap in "offer"
+        return {
+            "message": "OK",
+            "company_id": RECRUITEE_COMPANY_ID,
+            "url": url,
+            "result": offer,
+        }
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+    except Exception as e:
+        logger.exception("Recruitee /offers/{id} call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
+
+
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
 def whoami(request: Request):
     require_api_key(request)
