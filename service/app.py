@@ -3783,6 +3783,120 @@ async def create_job_offer(request: Request, body: CreateJobOfferRequest):
         "created": True
     }
 
+# ---- Pydantic query model for /recruitee/candidates ----
+class RecruiteeCandidatesQuery(BaseModel):
+    limit: int | None = 50
+    offset: int | None = 0
+    created_after: datetime | None = None
+    disqualified: bool | None = None
+    qualified: bool | None = None
+    ids: str | None = None
+    offer_id: str | None = None
+    query: str | None = None
+    sort: str | None = "by_date"
+    with_messages: bool | None = None
+    with_my_messages: bool | None = None
+
+    @field_validator("sort")
+    @classmethod
+    def _validate_sort(cls, v):
+        if v is None:
+            return v
+        allowed = {"by_date", "by_last_message"}
+        if v not in allowed:
+            raise ValueError(f"sort must be one of {allowed}")
+        return v
+
+    def to_recruitee_params(self) -> dict[str, str]:
+        params: dict[str, str] = {}
+        if self.limit is not None:
+            params["limit"] = str(min(self.limit, 10000))
+        if self.offset is not None:
+            params["offset"] = str(self.offset)
+        if self.created_after:
+            params["created_after"] = self.created_after.isoformat()
+        if self.disqualified is not None:
+            params["disqualified"] = "1" if self.disqualified else "0"
+        if self.qualified is not None:
+            params["qualified"] = "1" if self.qualified else "0"
+        if self.ids:
+            params["ids"] = self.ids
+        if self.offer_id:
+            params["offer_id"] = self.offer_id
+        if self.query:
+            params["query"] = self.query
+        if self.sort:
+            params["sort"] = self.sort
+        if self.with_messages is not None:
+            params["with_messages"] = "1" if self.with_messages else "0"
+        if self.with_my_messages is not None:
+            params["with_my_messages"] = "1" if self.with_my_messages else "0"
+        return params
+
+
+# ---- GET /recruitee/candidates ----
+@app.get("/recruitee/candidates")
+async def list_recruitee_candidates(
+    request: Request,
+    limit: int | None = Query(50, ge=1, le=10000),
+    offset: int | None = Query(0, ge=0),
+    created_after: datetime | None = Query(None),
+    disqualified: bool | None = Query(None),
+    qualified: bool | None = Query(None),
+    ids: str | None = Query(None),
+    offer_id: str | None = Query(None),
+    query: str | None = Query(None),
+    sort: str | None = Query("by_date"),
+    with_messages: bool | None = Query(None),
+    with_my_messages: bool | None = Query(None),
+):
+    """
+    Proxy to Recruitee: GET /c/{company_id}/candidates
+    Retrieves candidates from the Recruitee database using offset-based pagination.
+    """
+
+    require_api_key(request)
+    if not RECRUITEE_COMPANY_ID:
+        raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
+
+    qmodel = RecruiteeCandidatesQuery(
+        limit=limit,
+        offset=offset,
+        created_after=created_after,
+        disqualified=disqualified,
+        qualified=qualified,
+        ids=ids,
+        offer_id=offer_id,
+        query=query,
+        sort=sort,
+        with_messages=with_messages,
+        with_my_messages=with_my_messages,
+    )
+
+    params = qmodel.to_recruitee_params()
+    url = f"{RECRUITEE_API_URL}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=_rb_headers(), params=params)
+        if resp.status_code >= 400:
+            logger.error("Recruitee error %s: %s", resp.status_code, resp.text)
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        data = resp.json()
+        return {
+            "message": "OK",
+            "company_id": RECRUITEE_COMPANY_ID,
+            "params": params,
+            "result_count": len(data.get("candidates", [])),
+            "result": data,
+        }
+
+    except httpx.TimeoutException:
+        raise HTTPException(504, "Recruitee API timed out")
+    except Exception as e:
+        logger.exception("Recruitee call failed")
+        raise HTTPException(502, f"Upstream error: {e}")
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
