@@ -3512,7 +3512,7 @@ async def new_candidate_recruitee_webhook(request: Request):
 
 # ---- Pydantic query model for /recruitee/search/new/candidates ----
 class RecruiteeSearchCandidatesQuery(BaseModel):
-    limit: int | None = 60
+    limit: int | None = 50
     page: int | None = 1
     filters_json: list[dict] | None = None
     sort_by: str | None = "created_at_desc"
@@ -3554,7 +3554,7 @@ class RecruiteeSearchCandidatesQuery(BaseModel):
 @app.get("/recruitee/search/new/candidates")
 async def list_recruitee_candidates_new(
     request: Request,
-    limit: int | None = Query(60, ge=1, le=10000),
+    limit: int | None = Query(50, ge=1, le=10000),
     page: int | None = Query(1, ge=1),
     sort_by: str | None = Query("created_at_desc"),
     has_cv: bool | None = Query(None, description="Filter only candidates with CVs"),
