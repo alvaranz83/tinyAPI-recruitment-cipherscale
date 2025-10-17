@@ -3176,50 +3176,60 @@ async def move_by_recruitee_webhook(request: Request):
 async def new_candidate_recruitee_webhook(request: Request):
     """
     Handles Recruitee 'new_candidate' webhook events.
-    - Extracts candidate_id & company_id
+    - Normalizes Recruitee webhook to match schema (wraps under attributes)
     - Fetches candidate details from Recruitee
-    - Builds Applied_Contact_Priority structure
     - Evaluates via OpenAI (A–E scoring)
     - Updates Recruitee with score and explanation
     """
 
-   # Step 1️⃣ — Parse incoming webhook JSON and log it
+    # Step 1️⃣ — Parse and normalize incoming webhook JSON
     try:
         raw = await request.body()
         raw_text = raw.decode("utf-8")
-    
-        # 🔍 Log the exact raw payload (safe for debugging)
-        logger.info("📩 RAW WEBHOOK BODY (as text): %s", raw_text)
-    
+        logger.info("📩 RAW WEBHOOK BODY: %s", raw_text)
+
         data = json.loads(raw_text)
-    
-        # 🔍 Log parsed JSON object structure (with indentation)
-        logger.info("📦 PARSED JSON OBJECT: %s", json.dumps(data, indent=2))
+
+        # ✅ Normalize structure to match OpenAPI schema
+        # Recruitee sends payload at root level — wrap under "attributes"
+        if "attributes" not in data:
+            data = {
+                "attributes": {
+                    "id": data.get("id"),
+                    "event_type": data.get("event_type"),
+                    "event_subtype": data.get("event_subtype"),
+                    "created_at": data.get("created_at"),
+                    "attempt_count": data.get("attempt_count"),
+                    "payload": data.get("payload", {}),
+                }
+            }
+
+        logger.info("📦 NORMALIZED PAYLOAD: %s", json.dumps(data, indent=2))
 
     except Exception as e:
         logger.error("❌ Invalid JSON body: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
-
-    # Step 2️⃣ — Extract required fields
+    # Step 2️⃣ — Extract required fields safely
     try:
-        attrs = data.get("attributes") or {}
-        payload = attrs.get("payload") or {}
-        candidate = payload.get("candidate") or {}
-        company = payload.get("company") or {}
+        attrs = data["attributes"]
+        payload = attrs.get("payload", {})
+        candidate = payload.get("candidate", {})
+        company = payload.get("company", {})
 
         candidate_id = candidate.get("id")
         company_id = company.get("id")
 
         if not candidate_id or not company_id:
             raise ValueError("Missing candidate_id or company_id")
+
     except Exception as e:
-        logger.error("Invalid webhook format: %s", e)
-        raise HTTPException(400, f"Invalid webhook format: {e}")
+        logger.error("❌ Invalid webhook format: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid webhook format: {e}")
 
     logger.info("🎯 Processing Recruitee candidate_id=%s company_id=%s", candidate_id, company_id)
 
-    # Step 3️⃣ — Fetch candidate info
+    # Step 3️⃣ — Fetch candidate info from Recruitee
     candidate_data = await call_recruitee_candidate(candidate_id, company_id)
 
     # Step 4️⃣ — Build structured data for AI evaluation
@@ -3267,7 +3277,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             }
         )
 
-    # Step 5️⃣ — Evaluate via OpenAI
+    # Step 5️⃣ — Evaluate via OpenAI (A–E scoring)
     ai_result = await call_openai_evaluation(applied_contact_priority)
     score = ai_result.get("Scoring", "N/A")
     explanation = ai_result.get("Score_Explanation", "No explanation returned.")
@@ -3281,6 +3291,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     applied_contact_priority["Status"] = "Fields updated successfully in Recruitee"
 
     return applied_contact_priority
+
 
 
 
