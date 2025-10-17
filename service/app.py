@@ -3475,15 +3475,30 @@ async def get_recruitee_candidate(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, headers=_rb_headers())
+
         if resp.status_code >= 400:
             logger.error("Recruitee error %s: %s", resp.status_code, resp.text)
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
-        return resp.json()
+
+        # Log the full JSON response (pretty-printed)
+        try:
+            data = resp.json()
+            logger.info("📦 Recruitee candidate %s full JSON:\n%s",
+                        candidate_id,
+                        json.dumps(data, ensure_ascii=False, indent=2))
+            return data
+        except ValueError:
+            # Fallback: not JSON (unexpected), log raw text
+            logger.warning("⚠️ Recruitee candidate %s returned non-JSON. Raw body:\n%s",
+                           candidate_id, resp.text)
+            return resp.text
+
     except httpx.TimeoutException:
         raise HTTPException(504, "Recruitee API timed out")
     except Exception as e:
         logger.exception("Recruitee call failed")
         raise HTTPException(502, f"Upstream error: {e}")
+
 
 
 # ---- Pydantic query model for /positions/get ----
