@@ -3471,7 +3471,7 @@ async def get_recruitee_candidate(
     if not RECRUITEE_COMPANY_ID:
         raise HTTPException(500, "RECRUITEE_COMPANY_ID not configured")
 
-    url = f"{RECRUITEE_BASE}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates/{candidate_id}"
+    url = f"{RECRUITEE_API_URL}/c/{urllib.parse.quote(RECRUITEE_COMPANY_ID)}/candidates/{candidate_id}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url, headers=_rb_headers())
