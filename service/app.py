@@ -3172,43 +3172,47 @@ async def move_by_recruitee_webhook(request: Request):
 # /candidates/newCandidateRecruiteeWebhook
 # ----------------------------------------
 
-@router.post("/candidates/newCandidateRecruiteeWebhook")
+@app.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
     """
-    Simplified webhook:
-    - Extract candidate_id & company_id
-    - Fetch candidate details
-    - Build Applied_Contact_Priority object
-    - Evaluate via OpenAI
-    - Push results back to Recruitee custom fields
+    Handles Recruitee 'new_candidate' webhook events.
+    - Extracts candidate_id & company_id
+    - Fetches candidate details from Recruitee
+    - Builds Applied_Contact_Priority structure
+    - Evaluates via OpenAI (A–E scoring)
+    - Updates Recruitee with score and explanation
     """
 
-    # Step 1️⃣ — Read incoming webhook
+    # Step 1️⃣ — Parse incoming webhook JSON
     try:
         raw = await request.body()
         data = json.loads(raw.decode("utf-8"))
     except Exception as e:
+        logger.error("Invalid JSON body: %s", e)
         raise HTTPException(400, f"Invalid JSON body: {e}")
 
-    # Extract candidate_id and company_id
+    # Step 2️⃣ — Extract required fields
     try:
         attrs = data.get("attributes") or {}
         payload = attrs.get("payload") or {}
         candidate = payload.get("candidate") or {}
-        candidate_id = candidate.get("id")
         company = payload.get("company") or {}
+
+        candidate_id = candidate.get("id")
         company_id = company.get("id")
+
         if not candidate_id or not company_id:
             raise ValueError("Missing candidate_id or company_id")
     except Exception as e:
+        logger.error("Invalid webhook format: %s", e)
         raise HTTPException(400, f"Invalid webhook format: {e}")
 
-    logger.info("🎯 Processing new candidate webhook: candidate_id=%s company_id=%s", candidate_id, company_id)
+    logger.info("🎯 Processing Recruitee candidate_id=%s company_id=%s", candidate_id, company_id)
 
-    # Step 2️⃣ — Get full candidate data
+    # Step 3️⃣ — Fetch candidate info
     candidate_data = await call_recruitee_candidate(candidate_id, company_id)
 
-    # Step 3️⃣ — Initialize and fill Applied_Contact_Priority
+    # Step 4️⃣ — Build structured data for AI evaluation
     applied_contact_priority = {
         "Candidate": {
             "Id": candidate_data["candidate"].get("id"),
@@ -3235,7 +3239,6 @@ async def new_candidate_recruitee_webhook(request: Request):
         },
     }
 
-    # Fill Job_Description from references (Offer type)
     offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
     if offers:
         offer = offers[0]
@@ -3254,15 +3257,15 @@ async def new_candidate_recruitee_webhook(request: Request):
             }
         )
 
-    # Step 4️⃣ — Evaluate via OpenAI
+    # Step 5️⃣ — Evaluate via OpenAI
     ai_result = await call_openai_evaluation(applied_contact_priority)
     score = ai_result.get("Scoring", "N/A")
     explanation = ai_result.get("Score_Explanation", "No explanation returned.")
 
-    # Step 5️⃣ — Update Recruitee custom fields
+    # Step 6️⃣ — Update Recruitee with AI results
     await update_recruitee_custom_fields(company_id, candidate_id, score, explanation)
 
-    # Step 6️⃣ — Return enriched object
+    # Step 7️⃣ — Return enriched response
     applied_contact_priority["Candidate"]["Scoring"] = score
     applied_contact_priority["Candidate"]["Score_Explanation"] = explanation
     applied_contact_priority["Status"] = "Fields updated successfully in Recruitee"
