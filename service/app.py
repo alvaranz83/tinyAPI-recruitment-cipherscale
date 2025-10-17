@@ -103,7 +103,7 @@ _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
 async def call_recruitee_candidate(candidate_id: int, company_id: int):
     """Fetch candidate details from Recruitee."""
     url = f"{RECRUITEE_API_URL}/c/{company_id}/candidates/{candidate_id}"
-    headers = {"Authorization": f"Bearer {RECRUITEE_API_KEY}"}
+    headers = {"Authorization": f"Bearer {RECRUITEE_API_TOKEN}"}
     async with httpx.AsyncClient() as client:
         r = await client.get(url, headers=headers, timeout=30)
     if r.status_code != 200:
@@ -155,7 +155,7 @@ Candidate data:
 async def update_recruitee_custom_fields(company_id: int, candidate_id: int, score: str, explanation: str):
     """Create custom Recruitee fields Contact Priority (AI-GPT) and Explanation."""
     base_url = f"{RECRUITEE_API_URL}/c/{company_id}/custom_fields/candidates/{candidate_id}/fields"
-    headers = {"Authorization": f"Bearer {RECRUITEE_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {RECRUITEE_API_TOKEN}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         # 1️⃣ Contact Priority (AI-GPT)
         field1 = {
