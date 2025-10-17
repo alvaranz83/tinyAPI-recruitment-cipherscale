@@ -3183,13 +3183,23 @@ async def new_candidate_recruitee_webhook(request: Request):
     - Updates Recruitee with score and explanation
     """
 
-    # Step 1️⃣ — Parse incoming webhook JSON
+   # Step 1️⃣ — Parse incoming webhook JSON and log it
     try:
         raw = await request.body()
-        data = json.loads(raw.decode("utf-8"))
+        raw_text = raw.decode("utf-8")
+    
+        # 🔍 Log the exact raw payload (safe for debugging)
+        logger.info("📩 RAW WEBHOOK BODY (as text): %s", raw_text)
+    
+        data = json.loads(raw_text)
+    
+        # 🔍 Log parsed JSON object structure (with indentation)
+        logger.info("📦 PARSED JSON OBJECT: %s", json.dumps(data, indent=2))
+
     except Exception as e:
-        logger.error("Invalid JSON body: %s", e)
-        raise HTTPException(400, f"Invalid JSON body: {e}")
+        logger.error("❌ Invalid JSON body: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
+
 
     # Step 2️⃣ — Extract required fields
     try:
