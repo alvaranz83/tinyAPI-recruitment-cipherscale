@@ -3168,9 +3168,9 @@ async def move_by_recruitee_webhook(request: Request):
             "error": str(e),
         }
 
-# ----------------------------------------
+# -----------------------------------------
 # /candidates/newCandidateRecruiteeWebhook
-# ----------------------------------------
+# -----------------------------------------
 
 @app.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
