@@ -51,17 +51,29 @@ DB_PORT = os.getenv("DB_PORT")
 SERVICE_ACCOUNT_FILE = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Initialize OpenAI once at top-level
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-#end
+
+# =======================
+# SLACK Env Variables
+# =======================
+
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_API_URL = "https://slack.com/api/chat.postMessage"
 
 
 # ========================
+# OpenAI Env Variables
+# =========================
+
+OPENAI_URL = os.getenv("OPENAI_URL")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY")) # Initialize OpenAI once at top-level
+
+
+# ========================
 # Recruitee Env VAriables
-#==========================
+# ==========================
 
 RECRUITEE_COMPANY_ID = os.getenv("RECRUITEE_COMPANY_ID")  # e.g. "123456" or subdomain
 RECRUITEE_API_TOKEN = os.getenv("RECRUITEE_API_TOKEN")   # Bearer token
@@ -80,6 +92,94 @@ _FOR_SPLIT_RE = re.compile(r"\bfor\b", re.IGNORECASE)
 
 _AND_SPLIT_RE = re.compile(r"\s*(?:,| and )\s*", re.IGNORECASE)
 _TO_CLAUSE_RE = re.compile(r"\bto\b", re.IGNORECASE)
+
+
+# ============================
+# Helper Functions
+# ============================
+
+# Helpers for evaluating canddiates that apply and adding Scoring on Recriutee
+
+async def call_recruitee_candidate(candidate_id: int, company_id: int):
+    """Fetch candidate details from Recruitee."""
+    url = f"{RECRUITEE_API_URL}/c/{company_id}/candidates/{candidate_id}"
+    headers = {"Authorization": f"Bearer {RECRUITEE_API_KEY}"}
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=headers, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(status_code=r.status_code, detail=f"Recruitee API error: {r.text}")
+    return r.json()
+
+
+async def call_openai_evaluation(payload: dict) -> dict:
+    """Send candidate/job data to OpenAI LLM and return scoring + explanation."""
+    prompt = f"""
+You are an expert recruiter scoring candidates (A–E). 
+Use this grading scale:
+
+🔹 A — Outstanding Fit (Top 5–10%) Profile: CV and LinkedIn show direct, high-level alignment with all core job requirements. Demonstrated success in similar roles or industries (e.g., proven performance in relevant companies or projects). Possesses all mandatory skills and most optional/nice-to-have ones. Evidence of leadership, innovation, or measurable impact (e.g., "reduced costs by 30%", "scaled API to millions of users"). Cultural and communication fit appears excellent based on writing style, tone, and profile. Action: Fast-track to TA/HR Interview or 1st Technical Interview.
+🔹 B — Strong Fit (Top 20–30%) Profile: Meets all must-have qualifications and most preferred ones. Has relevant experience, even if from smaller or less-known organizations. Some areas (e.g., tooling or domain) may require light training. Shows solid problem-solving and learning potential. LinkedIn reflects professional growth and continuous learning. Action: Advance to interview. High potential for success. 
+🔹 C — Moderate Fit (Average, 40–50%) Profile: Meets some core requirements but lacks depth or years of experience. Career path may be adjacent (e.g., backend developer applying for DevOps). Missing 1–2 important technical skills or certifications. Limited evidence of impact or ownership. LinkedIn profile somewhat generic or incomplete. Action: Keep in pipeline as “potential”; interview only if pipeline is thin or role flexibility exists. 
+🔹 D — Weak Fit (Bottom 20–30%) Profile: Lacks several mandatory skills or relevant experience. Experience unrelated to the job’s technical or functional domain. Career progression unclear or inconsistent with role expectations. CV generic, lacking outcomes or clarity. LinkedIn incomplete or outdated. Action: Disqualify or park in “Talent Pool”. 
+🔹 E — Poor Fit / Reject (Bottom 10%) Profile: No alignment with the job’s scope or industry. Missing essential qualifications, education, or technical baseline. CV poorly written or indicates career mismatch. No evidence of adaptability or learning potential. Possibly AI-generated or spam submissions. Action: Reject.
+
+Evaluate the candidate below against the job description. 
+Return ONLY JSON with keys: "Scoring" and "Score_Explanation".
+
+Candidate data:
+{json.dumps(payload, indent=2)}
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(OPENAI_URL, headers=headers, json=body, timeout=60)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"OpenAI API error: {resp.text}")
+    data = resp.json()
+    text = data["choices"][0]["message"]["content"]
+    try:
+        result = json.loads(text)
+    except Exception:
+        logger.warning("OpenAI returned non-JSON text: %s", text)
+        result = {"Scoring": "N/A", "Score_Explanation": text}
+    return result
+
+
+async def update_recruitee_custom_fields(company_id: int, candidate_id: int, score: str, explanation: str):
+    """Create custom Recruitee fields Contact Priority (AI-GPT) and Explanation."""
+    base_url = f"{RECRUITEE_API_URL}/c/{company_id}/custom_fields/candidates/{candidate_id}/fields"
+    headers = {"Authorization": f"Bearer {RECRUITEE_API_KEY}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient() as client:
+        # 1️⃣ Contact Priority (AI-GPT)
+        field1 = {
+            "field": {
+                "name": "Contact Priority (AI-GPT)",
+                "values": [{"text": score}],
+                "kind": "single_line",
+            }
+        }
+        await client.post(base_url, headers=headers, json=field1, timeout=30)
+
+        # 2️⃣ Contact Priority Explanation
+        field2 = {
+            "field": {
+                "name": "Contact Priority Explanation",
+                "values": [{"text": explanation}],
+                "kind": "multi_line",
+            }
+        }
+        await client.post(base_url, headers=headers, json=field2, timeout=30)
+
+### End of Helpers to evaluate canidates that apply on and land on Recruitee
+
+
 
 ## Helper to use OpenAI API to talk to agent from external services
 async def process_with_gpt(prompt: str) -> str:
@@ -3068,282 +3168,106 @@ async def move_by_recruitee_webhook(request: Request):
             "error": str(e),
         }
 
-# -------------------------------
+# ----------------------------------------
 # /candidates/newCandidateRecruiteeWebhook
-# -------------------------------
-@app.post("/candidates/newCandidateRecruiteeWebhook")
+# ----------------------------------------
+
+@router.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
     """
-    Handles Recruitee 'new_candidate' webhook events.
-    ✅ Maps Recruitee payload -> PostgreSQL columns
-    ✅ Inserts (or upserts) into candidates table
-    ✅ Handles test webhooks gracefully
+    Simplified webhook:
+    - Extract candidate_id & company_id
+    - Fetch candidate details
+    - Build Applied_Contact_Priority object
+    - Evaluate via OpenAI
+    - Push results back to Recruitee custom fields
     """
 
-    # Step 1️⃣ — Read and log the raw body
+    # Step 1️⃣ — Read incoming webhook
     try:
-        raw_body = await request.body()
-        raw_text = raw_body.decode("utf-8")
-        logger.info("🔍 RAW WEBHOOK PAYLOAD (Recruitee newCandidate):\n%s", raw_text)
+        raw = await request.body()
+        data = json.loads(raw.decode("utf-8"))
     except Exception as e:
-        logger.exception("❌ Failed to read webhook body: %s", e)
-        raise HTTPException(status_code=400, detail=f"Cannot read webhook body: {e}")
+        raise HTTPException(400, f"Invalid JSON body: {e}")
 
-    # Step 2 — Parse JSON manually
+    # Extract candidate_id and company_id
     try:
-        json_data = json.loads(raw_text)
+        attrs = data.get("attributes") or {}
+        payload = attrs.get("payload") or {}
+        candidate = payload.get("candidate") or {}
+        candidate_id = candidate.get("id")
+        company = payload.get("company") or {}
+        company_id = company.get("id")
+        if not candidate_id or not company_id:
+            raise ValueError("Missing candidate_id or company_id")
     except Exception as e:
-        logger.exception("❌ Invalid JSON format: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-    
-    # ✅ this must be OUTSIDE the except:
-    logger.info("🔑 Top-level keys: %s", list(json_data.keys()))
-    try:
-        logger.info(
-            "👀 attributes present? %s | type=%s",
-            "attributes" in json_data,
-            type(json_data.get("attributes", None)).__name__,
-        )
-        if "attributes" in json_data and isinstance(json_data["attributes"], dict):
-            logger.info("🧩 attributes keys: %s", list(json_data["attributes"].keys()))
-    except Exception:
-        logger.exception("Failed to introspect attributes")
+        raise HTTPException(400, f"Invalid webhook format: {e}")
 
+    logger.info("🎯 Processing new candidate webhook: candidate_id=%s company_id=%s", candidate_id, company_id)
 
-    # Step 3️⃣ — Validate via Pydantic
-    try:
-        body = RecruiteeWebhookRequest(**json_data)
-        logger.info("✅ Webhook validated successfully via Pydantic model.")
-    except Exception as e:
-        logger.exception("❌ Validation error while parsing webhook payload: %s", e)
-        raise HTTPException(status_code=422, detail=f"Webhook validation failed: {e}")
+    # Step 2️⃣ — Get full candidate data
+    candidate_data = await call_recruitee_candidate(candidate_id, company_id)
 
-    # ✅ NEW: Normalize attributes from either wrapped-or-flat shapes
-    def normalize_attrs(json_data: Dict[str, Any], body: RecruiteeWebhookRequest) -> Optional[RecruiteeWebhookAttributes]:
-        # 1) If wrapped, just use it
-        if body.attributes is not None:
-            return body.attributes
+    # Step 3️⃣ — Initialize and fill Applied_Contact_Priority
+    applied_contact_priority = {
+        "Candidate": {
+            "Id": candidate_data["candidate"].get("id"),
+            "Name": candidate_data["candidate"].get("name"),
+            "cv_url": candidate_data["candidate"].get("cv_url"),
+            "Source": candidate_data["candidate"].get("source"),
+            "Sources": candidate_data["candidate"].get("sources", []),
+            "Social_links": candidate_data["candidate"].get("social_links", []),
+            "Links": candidate_data["candidate"].get("links", []),
+            "Open_question_answers": candidate_data["candidate"].get("open_question_answers", []),
+            "Grouped_open_questions_answers": candidate_data["candidate"].get("grouped_open_question_answers", []),
+        },
+        "Job_Description": {
+            "id": None,
+            "Title": None,
+            "Description": None,
+            "Requirements": None,
+            "Department": None,
+            "Url": None,
+            "Remote": None,
+            "Hybrid": None,
+            "On_site": None,
+            "Highlight_html": None,
+        },
+    }
 
-        # 2) If flat event fields exist, coerce into attributes
-        flat_has_event_bits = any(k in json_data for k in ("event_type", "event_subtype", "payload"))
-        if flat_has_event_bits:
-            try:
-                coerced_payload = None
-                if isinstance(json_data.get("payload"), dict):
-                    coerced_payload = RecruiteeWebhookPayload(**json_data["payload"])
-
-                return RecruiteeWebhookAttributes(
-                    attempt_count=json_data.get("attempt_count"),
-                    created_at=json_data.get("created_at"),
-                    id=json_data.get("id"),
-                    level=json_data.get("level"),
-                    event_type=json_data.get("event_type"),
-                    event_subtype=json_data.get("event_subtype"),
-                    payload=coerced_payload,
-                    # "test" isn’t present in your samples; default False
-                    test=json_data.get("test", False),
-                )
-            except Exception:
-                logger.exception("Could not coerce flat payload into RecruiteeWebhookAttributes")
-                return None
-
-        # 3) Nothing usable
-        return None
-
-    # Step 4️⃣ — Extract attributes safely
-    attrs = normalize_attrs(json_data, body)
-
-    if not attrs:
-        logger.error(
-            "❌ Missing attributes-equivalent. Raw keys=%s body_dict_keys=%s",
-            list(json_data.keys()),
-            list(body.dict().keys()),
-        )
-        raise HTTPException(status_code=400, detail="Missing attributes in webhook")
-
-    event_type = attrs.event_type
-    event_subtype = attrs.event_subtype
-    test_flag = attrs.test or False
-    payload = attrs.payload
-
-    logger.info("📦 Event type: %s | Subtype: %s | Test: %s", event_type, event_subtype, test_flag)
-
-    # Step 5️⃣ — Skip test webhooks
-    if test_flag:
-        logger.info("🧪 Test webhook received — responding 200 OK.")
-        return {"message": "Recruitee webhook verified successfully (test event)."}
-
-    if event_type != "new_candidate":
-        logger.info("⚙️ Ignoring non-new_candidate event: %s", event_type)
-        return {"message": f"Ignored event type '{event_type}'"}
-
-    if not payload:
-        logger.warning("⚠️ No payload found in webhook.")
-        return {"message": "No payload found."}
-
-    # Step 6️⃣ — Extract candidate + offer + department data (small tweak to accept offer/offs)
-    try:
-        candidate = getattr(payload, "candidate", None)
-        # normalize singular/plural
-        offers = getattr(payload, "offers", None)
-        if not offers and getattr(payload, "offer", None):
-            offers = [payload.offer]
-
-        if not candidate:
-            raise Exception("Missing candidate block in webhook payload")
-
-        # Candidate core info
-        recruitee_id = getattr(candidate, "id", None)
-        name = getattr(candidate, "name", None)
-        emails = getattr(candidate, "emails", []) or []
-        phones = getattr(candidate, "phones", []) or []
-        photo_thumb_url = getattr(candidate, "photo_thumb_url", None)
-        referrer = getattr(candidate, "referrer", None)
-        source = getattr(candidate, "source", None)
-
-        # Offer / job info
-        department_id = None
-        department_name = None
-        job_title = None
-
-        if offers:
-            offer = offers[0]
-            job_title = getattr(offer, "title", None)
-            dept = getattr(offer, "department", None)
-            if dept:
-                department_id = getattr(dept, "id", None)
-                department_name = getattr(dept, "name", None)
-
-        logger.info("👤 New candidate: %s | Dept: %s | Job: %s | Source: %s",
-                    name, department_name, job_title, source)
-        
-    except Exception as e:
-        logger.exception("❌ Failed extracting candidate info: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid payload structure: {e}")
-
-    
-    ## --- Company ID & Company Name extraction (required for upsert key) ---
-
-    company_id = None
-    company_name = None
-    if payload and getattr(payload, "company", None):
-        company_id = getattr(payload.company, "id", None)
-        company_name = getattr(payload.company, "name", None)
-        
-    if company_id is None:
-        logger.error("❌ Missing company_id in Recruitee payload")
-        raise HTTPException(status_code=400, detail="Missing company_id in Recruitee payload")
-
-    
-    # Always set stage to "Applied"
-    stage_name = "Applied"
-    
-    # Role name from offers[*].title (fallback to singular offer)
-    role_name = None
-    offers = getattr(payload, "offers", None)
-    if not offers and getattr(payload, "offer", None):
-        offers = [payload.offer]
+    # Fill Job_Description from references (Offer type)
+    offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
     if offers:
-        for off in offers:
-            t = getattr(off, "title", None)
-            if t:
-                role_name = t
-                break
-
-
-    
-    # Step 7️⃣ — Persist (unchanged)
-    try:
-        query = """
-        INSERT INTO candidates (
-            company_id,
-            company_name,
-            recruitee_event_subtype,
-            recruitee_id,
-            full_name,
-            emails,
-            phones,
-            photo_thumb_url,
-            referrer,
-            source,
-            department_id,
-            department_name,
-            current_stage_name,
-            current_role_name,
-            job_title,
-            status,
-            created_at
+        offer = offers[0]
+        applied_contact_priority["Job_Description"].update(
+            {
+                "id": offer.get("id"),
+                "Title": offer.get("title"),
+                "Description": offer.get("description"),
+                "Requirements": offer.get("requirements"),
+                "Department": offer.get("department"),
+                "Url": offer.get("url"),
+                "Remote": offer.get("remote"),
+                "Hybrid": offer.get("hybrid"),
+                "On_site": offer.get("on_site"),
+                "Highlight_html": offer.get("highlight_html"),
+            }
         )
-        VALUES (
-            CAST(:company_id AS BIGINT),
-            CAST(:company_name AS TEXT),
-            CAST(:recruitee_event_subtype AS TEXT),
-            CAST(:recruitee_id AS BIGINT),
-            CAST(:full_name AS TEXT),
-            CAST(:emails AS TEXT[]),
-            CAST(:phones AS TEXT[]),
-            CAST(:photo_thumb_url AS TEXT),
-            CAST(:referrer AS TEXT),
-            CAST(:source AS TEXT),
-            CAST(:department_id AS BIGINT),
-            CAST(:department_name AS TEXT),     -- ✅ 12th
-            CAST(:current_stage_name AS TEXT),  -- ✅ 13th
-            CAST(:current_role_name  AS TEXT),  -- ✅ 14th
-            CAST(:job_title AS TEXT),           -- ✅ 15th
-            CAST(:status AS TEXT),
-            NOW()
-        )
-        ON CONFLICT (company_id, recruitee_id) DO UPDATE
-        SET
-            company_name        = EXCLUDED.company_name,
-            full_name           = EXCLUDED.full_name,
-            emails              = EXCLUDED.emails,
-            phones              = EXCLUDED.phones,
-            photo_thumb_url     = EXCLUDED.photo_thumb_url,
-            referrer            = EXCLUDED.referrer,
-            source              = EXCLUDED.source,
-            department_id       = EXCLUDED.department_id,
-            department_name     = EXCLUDED.department_name,
-            current_stage_name  = EXCLUDED.current_stage_name,
-            current_role_name   = EXCLUDED.current_role_name,
-            job_title           = EXCLUDED.job_title,
-            status              = 'active',
-            updated_at          = NOW()
-        RETURNING id
-        """
 
-    
-        values = {
-            "company_id": company_id,
-            "company_name": company_name,
-            "recruitee_event_subtype": event_subtype or "unknown",
-            "recruitee_id": recruitee_id,
-            "full_name": name,
-            "emails": emails,
-            "phones": phones,
-            "photo_thumb_url": photo_thumb_url,
-            "referrer": referrer,
-            "source": source,
-            "department_id": department_id,
-            "department_name": department_name,
-            "current_stage_name": stage_name,  # "Applied"
-            "current_role_name": role_name,    # offers.title
-            "job_title": job_title,
-            "status": "active",
-        }
-    
-        new_id = await database.fetch_val(query, values)
-        logger.info("✅ Candidate '%s' persisted successfully (id=%s)", name, new_id)
-    
-        return {
-            "message": f"Candidate '{name}' created/updated successfully.",
-            "id": new_id,
-            "mapping": values,
-        }
-    
-    except Exception as e:
-        logger.exception("❌ Database insert failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"DB insert failed: {e}")
+    # Step 4️⃣ — Evaluate via OpenAI
+    ai_result = await call_openai_evaluation(applied_contact_priority)
+    score = ai_result.get("Scoring", "N/A")
+    explanation = ai_result.get("Score_Explanation", "No explanation returned.")
+
+    # Step 5️⃣ — Update Recruitee custom fields
+    await update_recruitee_custom_fields(company_id, candidate_id, score, explanation)
+
+    # Step 6️⃣ — Return enriched object
+    applied_contact_priority["Candidate"]["Scoring"] = score
+    applied_contact_priority["Candidate"]["Score_Explanation"] = explanation
+    applied_contact_priority["Status"] = "Fields updated successfully in Recruitee"
+
+    return applied_contact_priority
 
 
 
