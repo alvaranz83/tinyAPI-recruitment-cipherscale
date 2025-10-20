@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
-import os, json, textwrap, re, uuid, logging, io, httpx, time, random, requests
+import os, json, textwrap, re, uuid, logging, io, httpx, time, random, requests, subprocess
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload 
@@ -3188,11 +3188,6 @@ async def move_by_recruitee_webhook(request: Request):
 # /candidates/newCandidateRecruiteeWebhook
 # -----------------------------------------
 
-from fastapi import Request, HTTPException
-import json, httpx, logging, os
-
-logger = logging.getLogger(__name__)
-
 @app.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
     """
@@ -3895,6 +3890,42 @@ async def list_recruitee_candidates(
     except Exception as e:
         logger.exception("Recruitee call failed")
         raise HTTPException(502, f"Upstream error: {e}")
+
+
+
+@app.post("/scrape-linkedin")
+async def scrape_linkedin(url: str = Query(..., description="LinkedIn URL to visit")):
+    """Calls Puppeteer script to login and extract the full DOM."""
+    try:
+        result = subprocess.run(
+            ["node", "scripts/scraper.js", url],
+            capture_output=True,
+            text=True,
+            timeout=150,
+            env={
+                **os.environ,
+                "LINKEDIN_EMAIL": os.getenv("LINKEDIN_EMAIL"),
+                "LINKEDIN_PASSWORD": os.getenv("LINKEDIN_PASSWORD"),
+            },
+        )
+
+        if result.returncode != 0:
+            raise Exception(result.stderr or "Puppeteer failed")
+
+        # Look for the JSON marker
+        match = re.search(r"###DOM_JSON###(.*)", result.stdout, re.DOTALL)
+        if match:
+            dom_json = json.loads(match.group(1))
+        else:
+            dom_json = {"raw_output": result.stdout}
+
+        return {"status": "success", "url": url, "dom": dom_json}
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Puppeteer timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/whoami") # Verify who the api is acting as when user impersonation
