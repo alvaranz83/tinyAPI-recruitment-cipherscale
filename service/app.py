@@ -3188,38 +3188,30 @@ async def move_by_recruitee_webhook(request: Request):
 # /candidates/newCandidateRecruiteeWebhook
 # -----------------------------------------
 
+from fastapi import Request, HTTPException
+import json, httpx, logging, os
+
+logger = logging.getLogger(__name__)
+
 @app.post("/candidates/newCandidateRecruiteeWebhook")
 async def new_candidate_recruitee_webhook(request: Request):
     """
     Handles Recruitee 'new_candidate' webhook events.
-    - Normalizes Recruitee webhook to match schema (wraps under attributes)
+    - Normalizes Recruitee webhook
     - Fetches candidate details from Recruitee
+    - Scrapes LinkedIn profile (if available)
     - Evaluates via OpenAI (A–E scoring)
     - Updates Recruitee with score and explanation
     """
 
     # Step 1️⃣ — Parse and normalize incoming webhook JSON
     try:
-        raw = await request.body()
-        raw_text = raw.decode("utf-8")
+        raw_text = (await request.body()).decode("utf-8")
         logger.info("📩 RAW WEBHOOK BODY: %s", raw_text)
-
         data = json.loads(raw_text)
 
-        # ✅ Normalize structure to match OpenAPI schema
-        # Recruitee sends payload at root level — wrap under "attributes"
         if "attributes" not in data:
-            data = {
-                "attributes": {
-                    "id": data.get("id"),
-                    "event_type": data.get("event_type"),
-                    "event_subtype": data.get("event_subtype"),
-                    "created_at": data.get("created_at"),
-                    "attempt_count": data.get("attempt_count"),
-                    "payload": data.get("payload", {}),
-                }
-            }
-
+            data = {"attributes": {"payload": data.get("payload", {}), **data}}
         logger.info("📦 NORMALIZED PAYLOAD: %s", json.dumps(data, indent=2))
 
     except Exception as e:
@@ -3232,13 +3224,10 @@ async def new_candidate_recruitee_webhook(request: Request):
         payload = attrs.get("payload", {})
         candidate = payload.get("candidate", {})
         company = payload.get("company", {})
-
         candidate_id = candidate.get("id")
         company_id = company.get("id")
-
         if not candidate_id or not company_id:
             raise ValueError("Missing candidate_id or company_id")
-
     except Exception as e:
         logger.error("❌ Invalid webhook format: %s", e)
         raise HTTPException(status_code=400, detail=f"Invalid webhook format: {e}")
@@ -3248,6 +3237,36 @@ async def new_candidate_recruitee_webhook(request: Request):
     # Step 3️⃣ — Fetch candidate info from Recruitee
     candidate_data = await call_recruitee_candidate(candidate_id, company_id)
 
+    # 🧠 Extract LinkedIn URL from social links
+    linkedin_url = None
+    social_links = candidate_data["candidate"].get("social_links", [])
+    if social_links:
+        linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
+
+    scraped_linkedin_content = None
+    if linkedin_url:
+        logger.info(f"🔍 Found LinkedIn URL: {linkedin_url}")
+        try:
+            # Call your /scrape-linkedin endpoint
+            async with httpx.AsyncClient() as client:
+                scrape_response = await client.post(
+                    f"{os.getenv('SERVICE_BASE_URL', 'http://localhost:8000')}/scrape-linkedin",
+                    params={"url": linkedin_url},
+                    timeout=150,
+                )
+                if scrape_response.status_code == 200:
+                    scraped_data = scrape_response.json()
+                    scraped_linkedin_content = scraped_data.get("dom", scraped_data)
+                    logger.info("✅ Successfully scraped LinkedIn profile.")
+                else:
+                    logger.warning(
+                        f"⚠️ Failed to scrape LinkedIn profile: {scrape_response.status_code} {scrape_response.text}"
+                    )
+        except Exception as e:
+            logger.error("❌ Error calling /scrape-linkedin endpoint: %s", e)
+    else:
+        logger.info("⚠️ No LinkedIn URL found in candidate social links.")
+
     # Step 4️⃣ — Build structured data for AI evaluation
     applied_contact_priority = {
         "Candidate": {
@@ -3256,10 +3275,11 @@ async def new_candidate_recruitee_webhook(request: Request):
             "cv_url": candidate_data["candidate"].get("cv_url"),
             "Source": candidate_data["candidate"].get("source"),
             "Sources": candidate_data["candidate"].get("sources", []),
-            "Social_links": candidate_data["candidate"].get("social_links", []),
+            "Social_links": social_links,
             "Links": candidate_data["candidate"].get("links", []),
             "Open_question_answers": candidate_data["candidate"].get("open_question_answers", []),
             "Grouped_open_questions_answers": candidate_data["candidate"].get("grouped_open_question_answers", []),
+            "Scraped_LinkedIn_Content": scraped_linkedin_content,  # 🆕 add scraped data here
         },
         "Job_Description": {
             "id": None,
@@ -3307,7 +3327,6 @@ async def new_candidate_recruitee_webhook(request: Request):
     applied_contact_priority["Status"] = "Fields updated successfully in Recruitee"
 
     return applied_contact_priority
-
 
 
 
