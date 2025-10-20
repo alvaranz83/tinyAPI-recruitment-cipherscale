@@ -1,1 +1,38 @@
+{
+  "name": "linkedin-automation",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "linkedin-automation",
+      "version": "1.0.0",
+      "license": "MIT",
+      "dependencies": {
+        "puppeteer": "^23.5.0"
+      }
+    },
+    "node_modules/puppeteer": {
+      "version": "23.5.0",
+      "resolved": "https://registry.npmjs.org/puppeteer/-/puppeteer-23.5.0.tgz",
+      "integrity": "sha512-QT3iwxY1sj8ofzbiY/3WAdOKh5f22Kyd9JkBu5OHpjF05A7EbqGAKLbz8xL6z17y9cok5pXfrWW4aJh0f9e8Dg==",
+      "dependencies": {
+        "cross-fetch": "^4.0.0",
+        "devtools-protocol": "0.0.1299070",
+        "https-proxy-agent": "^7.0.0",
+        "proxy-from-env": "^1.1.0",
+        "tar-fs": "^3.0.4",
+        "unbzip2-stream": "^1.4.3",
+        "ws": "^8.17.1"
+      }
+    }
+  },
+  "dependencies": {
+    "puppeteer": {
+      "version": "23.5.0",
+      "resolved": "https://registry.npmjs.org/puppeteer/-/puppeteer-23.5.0.tgz",
+      "integrity": "sha512-QT3iwxY1sj8ofzbiY/3WAdOKh5f22Kyd9JkBu5OHpjF05A7EbqGAKLbz8xL6z17y9cok5pXfrWW4aJh0f9e8Dg=="
+    }
+  }
+}
 
