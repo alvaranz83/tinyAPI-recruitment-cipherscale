@@ -1,24 +1,41 @@
-// scripts/scraper.js
+// scripts/linkedin_automation.js
 import puppeteer from "puppeteer";
 
+// Credentials from environment
 const username = process.env.LINKEDIN_EMAIL;
 const password = process.env.LINKEDIN_PASSWORD;
+
+/**
+ * Utility to add timestamps to console logs
+ */
+function logWithTime(message, emoji = "🧩") {
+  const now = new Date().toISOString().split("T")[1].replace("Z", "");
+  console.log(`[${now}] ${emoji} ${message}`);
+}
 
 /**
  * Launch Puppeteer, login (click sign-in first if needed), and extract DOM for the given URL.
  */
 export async function scrapePage(url) {
-  console.log(`🌐 Visiting: ${url}`);
+  logWithTime(`Visiting: ${url}`, "🌐");
 
+  // 1️⃣ Launch browser
   const browser = await puppeteer.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
   const page = await browser.newPage();
+  logWithTime("Puppeteer launched successfully", "🚀");
 
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+  // 2️⃣ Navigate to URL
+  try {
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+    logWithTime("Page loaded successfully", "✅");
+  } catch (err) {
+    logWithTime(`Error loading page: ${err.message}`, "❌");
+  }
 
-  // 1️⃣ Try to find and click "Sign in"
+  // 3️⃣ Look for "Sign in" / "Log in" button
   try {
     const signInButton = await page.$x(
       "//a[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in') or " +
@@ -28,32 +45,37 @@ export async function scrapePage(url) {
         "contains(@id,'login') or contains(@id,'signin')]"
     );
     if (signInButton.length > 0) {
-      console.log("🖱️ Clicking 'Sign in' button...");
+      logWithTime("Found 'Sign in' button, clicking...", "🖱️");
       await signInButton[0].click();
-      await page.waitForTimeout(4000);
+      await new Promise((r) => setTimeout(r, 4000));
+      logWithTime("Clicked 'Sign in' and waited 4s", "⏱️");
     } else {
-      console.log("⚠️ No visible 'Sign in' button found.");
+      logWithTime("No 'Sign in' button found — maybe already on login page", "⚠️");
     }
   } catch (err) {
-    console.log("⚠️ Error clicking 'Sign in' button:", err.message);
+    logWithTime(`Error finding/clicking 'Sign in': ${err.message}`, "⚠️");
   }
 
-  // 2️⃣ Fill in credentials
+  // 4️⃣ Attempt login
   try {
+    logWithTime("Waiting for email input...", "⌛");
     await page.waitForSelector(
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
       { timeout: 8000 }
     );
+    logWithTime("Typing email...", "📧");
     await page.type(
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
       username,
       { delay: 50 }
     );
 
+    logWithTime("Waiting for password input...", "🔑");
     await page.waitForSelector(
       "input[type='password'], input[name='session_password'], input[name='password']",
       { timeout: 8000 }
     );
+    logWithTime("Typing password...", "🔒");
     await page.type(
       "input[type='password'], input[name='session_password'], input[name='password']",
       password,
@@ -65,24 +87,28 @@ export async function scrapePage(url) {
         "contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in') or " +
         "contains(@type,'submit') or contains(@id,'login')]"
     );
+
     if (submitButton.length > 0) {
-      console.log("🚀 Submitting login form...");
+      logWithTime("Submitting login form...", "🚀");
       await submitButton[0].click();
     } else {
-      console.log("⚠️ No submit button found — pressing Enter instead.");
+      logWithTime("No submit button found — pressing Enter", "⚠️");
       await page.keyboard.press("Enter");
     }
 
+    logWithTime("Waiting for post-login navigation...", "🔄");
     await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
-    console.log("✅ Logged in successfully.");
+    logWithTime("✅ Login successful or redirected.", "✅");
   } catch (err) {
-    console.log("⚠️ No login form detected or failed to fill credentials:", err.message);
+    logWithTime(`Login skipped or failed: ${err.message}`, "⚠️");
   }
 
-  // 3️⃣ Wait for DOM to fully load
-  await page.waitForTimeout(3000);
+  // 5️⃣ Ensure full DOM loaded
+  logWithTime("Waiting 3s for DOM to stabilize...", "⏳");
+  await new Promise((r) => setTimeout(r, 3000));
 
-  // 4️⃣ Extract structured DOM
+  // 6️⃣ Extract structured DOM
+  logWithTime("Extracting structured DOM...", "🧠");
   const domData = await page.evaluate(() => {
     function serializeNode(node) {
       const obj = {
@@ -104,12 +130,16 @@ export async function scrapePage(url) {
     return serializeNode(document.body);
   });
 
-  console.log("✅ DOM captured successfully.");
-  console.log(JSON.stringify(domData, null, 2));
+  logWithTime("✅ DOM captured successfully", "📄");
+
+  // Optional preview for logs (shortened)
+  const snippet = JSON.stringify(domData).slice(0, 500);
+  logWithTime(`DOM Preview: ${snippet}...`, "🔍");
 
   await browser.close();
+  logWithTime("Browser closed successfully", "🧹");
 
-  // Return serialized JSON as a single line (for Python parsing)
+  // Return serialized JSON for Python subprocess
   console.log("###DOM_JSON###" + JSON.stringify(domData));
 }
 
@@ -117,6 +147,7 @@ export async function scrapePage(url) {
 if (process.argv[2]) {
   const url = process.argv[2];
   scrapePage(url).catch((err) => {
+    logWithTime(`Fatal error in scrapePage: ${err.message}`, "💥");
     console.error("❌ Error:", err);
     process.exit(1);
   });
