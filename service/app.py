@@ -14,7 +14,7 @@ from googleapiclient.errors import HttpError
 from google.oauth2 import service_account
 from sqlalchemy import create_engine, MetaData, insert
 from databases import Database
-from db import database
+from .db import database
 from uuid import UUID
 import logging
 from pydantic.config import ConfigDict  # Pydantic v2
