@@ -3898,7 +3898,7 @@ async def scrape_linkedin(url: str = Query(..., description="LinkedIn URL to vis
     """Calls Puppeteer script to login and extract the full DOM."""
     try:
         result = subprocess.run(
-            ["node", "scripts/scraper.js", url],
+            ["node", "scripts/linkedin_automation.js", url],
             capture_output=True,
             text=True,
             timeout=150,
