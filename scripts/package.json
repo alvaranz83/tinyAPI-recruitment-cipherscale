@@ -1,1 +1,14 @@
+{
+  "name": "linkedin-automation",
+  "version": "1.0.0",
+  "description": "Puppeteer LinkedIn scraper for FastAPI service",
+  "type": "module",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js"
+  },
+  "dependencies": {
+    "puppeteer": "^23.5.0"
+  }
+}
 
