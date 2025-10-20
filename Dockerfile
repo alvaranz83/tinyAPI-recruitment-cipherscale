@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r service/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Node dependencies (for Puppeteer)
 RUN cd scripts && npm install
