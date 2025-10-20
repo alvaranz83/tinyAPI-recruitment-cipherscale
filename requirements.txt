@@ -1,1 +1,7 @@
-
+fastapi==0.111.0
+uvicorn==0.30.1
+google-api-python-client==2.139.0
+google-auth==2.32.0
+openai
+databases[postgresql]
+psycopg2-binary
