@@ -123,6 +123,7 @@ Use this grading scale:
 🔹 D — Weak Fit (Bottom 20–30%) Profile: Lacks several mandatory skills or relevant experience. Experience unrelated to the job’s technical or functional domain. Career progression unclear or inconsistent with role expectations. CV generic, lacking outcomes or clarity. LinkedIn incomplete or outdated. Action: Disqualify or park in “Talent Pool”. 
 🔹 E — Poor Fit / Reject (Bottom 10%) Profile: No alignment with the job’s scope or industry. Missing essential qualifications, education, or technical baseline. CV poorly written or indicates career mismatch. No evidence of adaptability or learning potential. Possibly AI-generated or spam submissions. Action: Reject.
 
+
 Evaluate the candidate below against the job description. 
 Return ONLY JSON with keys: "Scoring" and "Score_Explanation".
 
@@ -142,13 +143,22 @@ Candidate data:
         resp = await client.post(OPENAI_URL, headers=headers, json=body, timeout=60)
     if resp.status_code != 200:
         raise HTTPException(status_code=500, detail=f"OpenAI API error: {resp.text}")
+
     data = resp.json()
     text = data["choices"][0]["message"]["content"]
+
+    # ✅ Fix: Strip Markdown code fences if present
+    cleaned_text = text.strip()
+    if cleaned_text.startswith("```"):
+        cleaned_text = cleaned_text.strip("`")
+        # remove optional 'json' tag
+        cleaned_text = re.sub(r"^json\s*", "", cleaned_text).strip()
     try:
-        result = json.loads(text)
+        result = json.loads(cleaned_text)
     except Exception:
         logger.warning("OpenAI returned non-JSON text: %s", text)
         result = {"Scoring": "N/A", "Score_Explanation": text}
+
     return result
 
 
