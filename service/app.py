@@ -194,9 +194,217 @@ async def update_recruitee_custom_fields(company_id: int, candidate_id: int, sco
         }
         await client.post(base_url, headers=headers, json=field2, timeout=30)
 
-### End of Helpers to evaluate canidates that apply on and land on Recruitee
+## End of Helpers to evaluate canidates that apply on and land on Recruitee
 
 
+## Helpers for the LinkedIn Profile DOM Scrapper
+
+def _get_attr(node, key, default=None):
+    return (node.get("attributes") or {}).get(key, default)
+
+def _classlist(node):
+    cls = _get_attr(node, "class", "") or ""
+    # classes may be space-separated string
+    return set(c for c in re.split(r"\s+", cls.strip()) if c)
+
+def _class_contains(node, needle):
+    return any(needle in c for c in _classlist(node))
+
+def _tag_is(node, tag):
+    return isinstance(node, dict) and node.get("tag", "").upper() == tag.upper()
+
+def _iter_children(node):
+    return (node.get("children") or []) if isinstance(node, dict) else []
+
+def _walk(node):
+    if isinstance(node, dict):
+        yield node
+        for ch in _iter_children(node):
+            yield from _walk(ch)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+
+def _find_div_by_id(dom, id_value):
+    for n in _walk(dom):
+        if _tag_is(n, "DIV") and (_get_attr(n, "id") or "").strip().lower() == id_value.strip().lower():
+            return n
+    return None
+
+def _collect_span_text(node, into):
+    # Collect plain text from span nodes under node
+    if not isinstance(node, (dict, list)):
+        return
+    if isinstance(node, dict):
+        if _tag_is(node, "SPAN"):
+            txt = node.get("text")
+            if isinstance(txt, str) and txt.strip():
+                into.append(txt.strip())
+        for ch in _iter_children(node):
+            _collect_span_text(ch, into)
+    else:
+        for item in node:
+            _collect_span_text(item, into)
+
+def _collect_text_under(node):
+    buf = []
+    _collect_span_text(node, buf)
+    # collapse whitespace & dedupe short repeats
+    text = " ".join(buf)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+def _find_descendants_by_class_contains(node, substr):
+    for n in _walk(node):
+        if _class_contains(n, substr):
+            yield n
+
+def _find_items(node):
+    # Find list items marked with class containing 'artdeco-list__item'
+    for n in _walk(node):
+        if _class_contains(n, "artdeco-list__item"):
+            yield n
+
+def _extract_header_and_desc(item_node):
+    # Header block: class includes 'display-flex flex-row justify-space-between'
+    header = None
+    for n in _walk(item_node):
+        cls = " ".join(_classlist(n))
+        if all(part in cls for part in ["display-flex", "flex-row", "justify-space-between"]):
+            header = n
+            break
+    header_text = _collect_text_under(header) if header else None
+
+    # Description block: class contains 'pvs-entity__sub-component' or 'pvs-entity__sub-components'
+    desc = None
+    for n in _walk(item_node):
+        if _class_contains(n, "pvs-entity__sub-component") or _class_contains(n, "pvs-entity__sub-components"):
+            desc = n
+            break
+    desc_text = _collect_text_under(desc) if desc else None
+
+    return header_text, desc_text
+
+# Main Extfractor of LinkedIn info
+
+def extract_linkedin_sections(dom):
+    """
+    dom: your LinkedIn DOM JSON (dict/list form coming from the scraper)
+    returns a dict with the requested sections
+    """
+    if dom is None:
+        return {}
+
+    out = {}
+
+    # --- Simple single-block sections (About, Services, Featured) ---
+    about_div = _find_div_by_id(dom, "about")
+    if about_div:
+        out["About"] = _collect_text_under(about_div)
+
+    services_div = _find_div_by_id(dom, "services")
+    if services_div:
+        out["Services"] = _collect_text_under(services_div)
+
+    featured_div = _find_div_by_id(dom, "featured")
+    if featured_div:
+        out["Featured"] = _collect_text_under(featured_div)
+
+    # --- Experience (div id="Experience") ---
+    exp_div = _find_div_by_id(dom, "Experience")
+    experiences = []
+    if exp_div:
+        for item in _find_items(exp_div):
+            header_text, desc_text = _extract_header_and_desc(item)
+            experiences.append({
+                "Header": header_text,       # company, role, work type, dates
+                "Description": desc_text,    # role description
+            })
+    if experiences:
+        out["Experiences"] = experiences
+
+    # --- Education (div id="education") ---
+    edu_div = _find_div_by_id(dom, "education")
+    educations = []
+    if edu_div:
+        for item in _find_items(edu_div):
+            header_text, desc_text = _extract_header_and_desc(item)
+            educations.append({
+                "Header": header_text,        # institution, degree/type, dates
+                "Description": desc_text,     # details
+            })
+    if educations:
+        out["Education"] = educations
+
+    # --- Licenses & Certifications (div id="licenses_and_certifications") ---
+    lic_div = _find_div_by_id(dom, "licenses_and_certifications")
+    licenses = []
+    if lic_div:
+        for item in _find_items(lic_div):
+            # certification name/company/issued/id noted in attributes around image field;
+            # header still contains useful text summary.
+            header_text, desc_text = _extract_header_and_desc(item)
+            # Look for data-field="entity_image_licenses_and_certifications" (optional extra)
+            meta_text = None
+            for n in _walk(item):
+                if (_get_attr(n, "data-field") or "") == "entity_image_licenses_and_certifications":
+                    meta_text = _collect_text_under(n)
+                    break
+            licenses.append({
+                "Header": header_text,
+                "Meta": meta_text,            # issuer, issued date, cert id (if surfaced)
+                "Description": desc_text,
+            })
+    if licenses:
+        out["Licenses_and_Certifications"] = licenses
+
+    # --- Projects (div id="projects") ---
+    proj_div = _find_div_by_id(dom, "projects")
+    projects = []
+    if proj_div:
+        for item in _find_items(proj_div):
+            header_text, desc_text = _extract_header_and_desc(item)
+            projects.append({
+                "Header": header_text,        # project name + date
+                "Description": desc_text,     # project description
+            })
+    if projects:
+        out["Projects"] = projects
+
+    # --- Volunteering (div id="volunteering_experience") ---
+    vol_div = _find_div_by_id(dom, "volunteering_experience")
+    volunteering = []
+    if vol_div:
+        for item in _find_items(vol_div):
+            header_text, desc_text = _extract_header_and_desc(item)
+            volunteering.append({
+                "Header": header_text,        # role, org, dates
+                "Description": desc_text,     # details
+            })
+    if volunteering:
+        out["Volunteering"] = volunteering
+
+    # --- Skills (div id="skills") ---
+    skills_div = _find_div_by_id(dom, "skills")
+    skills = []
+    if skills_div:
+        for item in _find_items(skills_div):
+            header_text, desc_text = _extract_header_and_desc(item)
+            skills.append({
+                "Skill": header_text,         # skill name
+                "Applied_In": desc_text,      # where it was used (if provided)
+            })
+    if skills:
+        out["Skills"] = skills
+
+    # Trim empty strings/lists
+    for k, v in list(out.items()):
+        if v in ("", None) or (isinstance(v, (list, dict)) and not v):
+            out.pop(k, None)
+
+    return out
+
+# End of LinkedIn Helper Functions ----
 
 ## Helper to use OpenAI API to talk to agent from external services
 async def process_with_gpt(prompt: str) -> str:
@@ -3316,7 +3524,14 @@ async def new_candidate_recruitee_webhook(request: Request):
     else:
         logger.info("⚠️ No LinkedIn URL found in candidate social links.")
 
+    # === NEW: extract LinkedIn sections we care about ===
+    linkedin_sections = extract_linkedin_sections(scraped_linkedin_content) if scraped_linkedin_content else {}
 
+    # Optional: tiny preview to confirm capture size per section
+    logger.info(
+        "🧩 LinkedIn sections extracted: %s",
+        {k: (len(v) if isinstance(v, list) else (len(v) if v else 0)) for k, v in linkedin_sections.items()}
+    )
 
     # Step 4️⃣ — Build structured data for AI evaluation
     applied_contact_priority = {
@@ -3330,7 +3545,19 @@ async def new_candidate_recruitee_webhook(request: Request):
             "Links": candidate_data["candidate"].get("links", []),
             "Open_question_answers": candidate_data["candidate"].get("open_question_answers", []),
             "Grouped_open_questions_answers": candidate_data["candidate"].get("grouped_open_question_answers", []),
-            "Scraped_LinkedIn_Content": scraped_linkedin_content,  # 🆕 add scraped data here
+    
+            # === NEW: only the specified LinkedIn sections ===
+            "LinkedIn": {
+                "About": linkedin_sections.get("About"),
+                "Services": linkedin_sections.get("Services"),
+                "Featured": linkedin_sections.get("Featured"),
+                "Experiences": linkedin_sections.get("Experiences"),
+                "Education": linkedin_sections.get("Education"),
+                "Licenses_and_Certifications": linkedin_sections.get("Licenses_and_Certifications"),
+                "Projects": linkedin_sections.get("Projects"),
+                "Volunteering": linkedin_sections.get("Volunteering"),
+                "Skills": linkedin_sections.get("Skills"),
+            },
         },
         "Job_Description": {
             "id": None,
@@ -3345,6 +3572,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             "Highlight_html": None,
         },
     }
+
 
     offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
     if offers:
