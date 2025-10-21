@@ -3229,15 +3229,16 @@ async def new_candidate_recruitee_webhook(request: Request):
 
     logger.info("🎯 Processing Recruitee candidate_id=%s company_id=%s", candidate_id, company_id)
 
+
     # Step 3️⃣ — Fetch candidate info from Recruitee
     candidate_data = await call_recruitee_candidate(candidate_id, company_id)
-
+    
     # 🧠 Extract LinkedIn URL from social links
     linkedin_url = None
     social_links = candidate_data["candidate"].get("social_links", [])
     if social_links:
         linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
-
+    
     scraped_linkedin_content = None
     if linkedin_url:
         logger.info(f"🔍 Found LinkedIn URL: {linkedin_url}")
@@ -3245,22 +3246,71 @@ async def new_candidate_recruitee_webhook(request: Request):
             # Call your /scrape-linkedin endpoint
             async with httpx.AsyncClient() as client:
                 scrape_response = await client.post(
-                    f"{os.getenv('SERVICE_BASE_URL', 'http://localhost:8000')}/scrape-linkedin",
+                    f"{os.getenv('SERVICE_BASE_URL', f'http://127.0.0.1:{os.getenv('PORT', '8000')}')}/scrape-linkedin",
                     params={"url": linkedin_url},
                     timeout=150,
                 )
+    
                 if scrape_response.status_code == 200:
-                    scraped_data = scrape_response.json()
-                    scraped_linkedin_content = scraped_data.get("dom", scraped_data)
-                    logger.info("✅ Successfully scraped LinkedIn profile.")
+                    # Try parsing as JSON, fallback to raw HTML if not JSON
+                    try:
+                        scraped_data = scrape_response.json()
+                        scraped_linkedin_content = scraped_data.get("dom", scraped_data)
+                    except Exception:
+                        scraped_linkedin_content = await scrape_response.aread()
+                        try:
+                            scraped_linkedin_content = scraped_linkedin_content.decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+    
+                    # ✅ Log truncated sample for quick debugging
+                    preview = str(scraped_linkedin_content)
+                    logger.info("✅ Successfully scraped LinkedIn profile. Sample (truncated): %s", preview[:500])
+    
+                    # 🚨 FULL HTML LOGGING (guarded by env var)
+                    if os.getenv("LOG_FULL_HTML") == "1":
+                        import time, json, logging
+                        from logging.handlers import RotatingFileHandler
+    
+                        _scrape_html_logger = logging.getLogger("scrape_html")
+                        if not _scrape_html_logger.handlers:
+                            os.makedirs("logs", exist_ok=True)
+                            _h = RotatingFileHandler("logs/scraped_html.log", maxBytes=50_000_000, backupCount=3)
+                            _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                            _scrape_html_logger.addHandler(_h)
+                            _scrape_html_logger.setLevel(logging.DEBUG)
+    
+                        html_text = scraped_linkedin_content
+                        if isinstance(html_text, (dict, list)):
+                            html_text = json.dumps(html_text, ensure_ascii=False)
+    
+                        cid = candidate_id or "unknown_candidate"
+                        comp = company_id or "unknown_company"
+                        ts = int(time.time())
+    
+                        _scrape_html_logger.debug(
+                            "candidate_id=%s company_id=%s ts=%s\n%s", cid, comp, ts, html_text
+                        )
+    
+                        # Optional: also log full HTML to main logger
+                        logger.debug(
+                            "🧾 FULL_LINKEDIN_HTML candidate_id=%s company_id=%s ts=%s\n%s",
+                            cid,
+                            comp,
+                            ts,
+                            html_text,
+                        )
+    
                 else:
                     logger.warning(
                         f"⚠️ Failed to scrape LinkedIn profile: {scrape_response.status_code} {scrape_response.text}"
                     )
+    
         except Exception as e:
             logger.error("❌ Error calling /scrape-linkedin endpoint: %s", e)
     else:
         logger.info("⚠️ No LinkedIn URL found in candidate social links.")
+
 
     # Step 4️⃣ — Build structured data for AI evaluation
     applied_contact_priority = {
