@@ -3573,6 +3573,41 @@ async def new_candidate_recruitee_webhook(request: Request):
         },
     }
 
+    # === LOG: Applied Contact Priority ===
+    try:
+        # Pretty-format once to reuse for both logs
+        applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
+    
+        # Console preview (truncate to avoid noisy logs)
+        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "4000"))
+        logger.info(
+            "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
+            len(applied_contact_priority_json),
+            min(len(applied_contact_priority_json), preview_limit),
+            applied_contact_priority_json[:preview_limit],
+        )
+    
+        # Optional full dump to rotating file (set LOG_CONTACT_PRIORITY=1 to enable)
+        if os.getenv("LOG_CONTACT_PRIORITY") == "1":
+            contact_logger = logging.getLogger("contact_priority")
+            if not contact_logger.handlers:
+                os.makedirs("logs", exist_ok=True)
+                handler = RotatingFileHandler("logs/contact_priority.log", maxBytes=50_000_000, backupCount=3)
+                handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                contact_logger.addHandler(handler)
+                contact_logger.setLevel(logging.DEBUG)
+    
+            contact_logger.debug(
+                "candidate_id=%s company_id=%s len=%d\n%s",
+                candidate_id,
+                company_id,
+                len(applied_contact_priority_json),
+                applied_contact_priority_json,
+            )
+    
+    except Exception as log_error:
+        logger.warning("⚠️ Failed to log applied_contact_priority: %s", log_error)
+
 
     offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
     if offers:
