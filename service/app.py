@@ -19,6 +19,7 @@ from uuid import UUID
 import logging
 from pydantic.config import ConfigDict  # Pydantic v2
 import urllib.parse, httpx
+from logging.handlers import RotatingFileHandler
 
 ###
 ####
@@ -3275,9 +3276,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     
                     # 🚨 FULL HTML LOGGING (guarded by env var)
                     if os.getenv("LOG_FULL_HTML") == "1":
-                        import time, json, logging
-                        from logging.handlers import RotatingFileHandler
-    
+                            
                         _scrape_html_logger = logging.getLogger("scrape_html")
                         if not _scrape_html_logger.handlers:
                             os.makedirs("logs", exist_ok=True)
