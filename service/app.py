@@ -3230,7 +3230,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     logger.info("🎯 Processing Recruitee candidate_id=%s company_id=%s", candidate_id, company_id)
 
 
-    # Step 3️⃣ — Fetch candidate info from Recruitee
+   # Step 3️⃣ — Fetch candidate info from Recruitee
     candidate_data = await call_recruitee_candidate(candidate_id, company_id)
     
     # 🧠 Extract LinkedIn URL from social links
@@ -3243,10 +3243,16 @@ async def new_candidate_recruitee_webhook(request: Request):
     if linkedin_url:
         logger.info(f"🔍 Found LinkedIn URL: {linkedin_url}")
         try:
+            # Prepare base URL dynamically
+            service_base = os.getenv("SERVICE_BASE_URL")
+            if not service_base:
+                port = os.getenv("PORT", "8000")
+                service_base = f"http://127.0.0.1:{port}"
+    
             # Call your /scrape-linkedin endpoint
             async with httpx.AsyncClient() as client:
                 scrape_response = await client.post(
-                    f"{os.getenv('SERVICE_BASE_URL', f'http://127.0.0.1:{os.getenv('PORT', '8000')}')}/scrape-linkedin",
+                    f"{service_base}/scrape-linkedin",
                     params={"url": linkedin_url},
                     timeout=150,
                 )
@@ -3310,6 +3316,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             logger.error("❌ Error calling /scrape-linkedin endpoint: %s", e)
     else:
         logger.info("⚠️ No LinkedIn URL found in candidate social links.")
+
 
 
     # Step 4️⃣ — Build structured data for AI evaluation
