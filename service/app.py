@@ -3572,6 +3572,24 @@ async def new_candidate_recruitee_webhook(request: Request):
             "Highlight_html": None,
         },
     }
+    
+    offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
+    if offers:
+        offer = offers[0]
+        applied_contact_priority["Job_Description"].update(
+            {
+                "id": offer.get("id"),
+                "Title": offer.get("title"),
+                "Description": offer.get("description"),
+                "Requirements": offer.get("requirements"),
+                "Department": offer.get("department"),
+                "Url": offer.get("url"),
+                "Remote": offer.get("remote"),
+                "Hybrid": offer.get("hybrid"),
+                "On_site": offer.get("on_site"),
+                "Highlight_html": offer.get("highlight_html"),
+            }
+        )
 
     # === LOG: Applied Contact Priority ===
     try:
@@ -3608,24 +3626,7 @@ async def new_candidate_recruitee_webhook(request: Request):
     except Exception as log_error:
         logger.warning("⚠️ Failed to log applied_contact_priority: %s", log_error)
 
-
-    offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
-    if offers:
-        offer = offers[0]
-        applied_contact_priority["Job_Description"].update(
-            {
-                "id": offer.get("id"),
-                "Title": offer.get("title"),
-                "Description": offer.get("description"),
-                "Requirements": offer.get("requirements"),
-                "Department": offer.get("department"),
-                "Url": offer.get("url"),
-                "Remote": offer.get("remote"),
-                "Hybrid": offer.get("hybrid"),
-                "On_site": offer.get("on_site"),
-                "Highlight_html": offer.get("highlight_html"),
-            }
-        )
+    
 
     # Step 5️⃣ — Evaluate via OpenAI (A–E scoring)
     ai_result = await call_openai_evaluation(applied_contact_priority)
