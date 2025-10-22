@@ -9,4 +9,3 @@ httpx
 pypdf
 beautifulsoup4
 lxml
-utils
