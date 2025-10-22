@@ -5,3 +5,7 @@ google-auth==2.32.0
 openai
 databases[postgresql]
 psycopg2-binary
+httpx
+pypdf
+beautifulsoup4
+lxml
