@@ -3458,7 +3458,7 @@ async def process_new_candidate(payload: dict):
                 if cv_text and len(cv_text) > max_chars:
                     cv_meta = {**cv_meta, "truncated": True, "orig_len": len(cv_text)}
                     cv_text = cv_text[:max_chars]
-                preview = (cv_text or "")[:1200].replace("\n", " ")
+                preview = (cv_text or "")[:1500].replace("\n", " ")
                 logger.info(
                     "📄 CV extraction: mime=%s pages=%s bytes=%s text_len=%s preview=%s",
                     cv_meta.get("mime"),
@@ -3533,7 +3533,7 @@ async def process_new_candidate(payload: dict):
         # === LOG: Applied Contact Priority JSON ===
         try:
             applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
-            preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "18000"))
+            preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "20000"))
             logger.info(
                 "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
                 len(applied_contact_priority_json),
