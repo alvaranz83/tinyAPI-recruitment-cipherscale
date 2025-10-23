@@ -3451,7 +3451,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             if cv_text and len(cv_text) > max_chars:
                 cv_meta = {**cv_meta, "truncated": True, "orig_len": len(cv_text)}
                 cv_text = cv_text[:max_chars]
-            preview = (cv_text or "")[:900].replace("\n", " ")  # tiny log preview
+            preview = (cv_text or "")[:1200].replace("\n", " ")  # tiny log preview
             logger.info("📄 CV extraction: mime=%s pages=%s bytes=%s text_len=%s preview=%s",
                         cv_meta.get("mime"), cv_meta.get("pages"), cv_meta.get("bytes"),
                         len(cv_text or ""), preview)
@@ -3617,7 +3617,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
     
         # Console preview (truncate to avoid noisy logs)
-        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "10000"))
+        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "15000"))
         logger.info(
             "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
             len(applied_contact_priority_json),
