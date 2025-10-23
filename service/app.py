@@ -3451,7 +3451,7 @@ async def new_candidate_recruitee_webhook(request: Request):
             if cv_text and len(cv_text) > max_chars:
                 cv_meta = {**cv_meta, "truncated": True, "orig_len": len(cv_text)}
                 cv_text = cv_text[:max_chars]
-            preview = (cv_text or "")[:600].replace("\n", " ")  # tiny log preview
+            preview = (cv_text or "")[:900].replace("\n", " ")  # tiny log preview
             logger.info("📄 CV extraction: mime=%s pages=%s bytes=%s text_len=%s preview=%s",
                         cv_meta.get("mime"), cv_meta.get("pages"), cv_meta.get("bytes"),
                         len(cv_text or ""), preview)
