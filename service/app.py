@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body, Path
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Query, Body, Path, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
@@ -111,7 +111,6 @@ async def call_recruitee_candidate(candidate_id: int, company_id: int):
         raise HTTPException(status_code=r.status_code, detail=f"Recruitee API error: {r.text}")
     return r.json()
 
-
 async def call_openai_evaluation(payload: dict) -> dict:
     """Send candidate/job data to OpenAI LLM and return scoring + explanation."""
     prompt = f"""
@@ -193,6 +192,19 @@ async def update_recruitee_custom_fields(company_id: int, candidate_id: int, sco
             }
         }
         await client.post(base_url, headers=headers, json=field2, timeout=30)
+
+
+async def get_existing_custom_fields(company_id: int, candidate_id: int) -> list:
+    """Check existing Recruitee fields to avoid duplicates."""
+    url = f"{RECRUITEE_API_URL}/c/{company_id}/candidates/{candidate_id}/custom_fields"
+    headers = {"Authorization": f"Bearer {RECRUITEE_API_TOKEN}"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url, headers=headers)
+    if r.status_code != 200:
+        logger.warning(f"⚠️ Failed to get existing fields for candidate {candidate_id}: {r.status_code}")
+        return []
+    return [f["name"] for f in r.json().get("custom_fields", []) if "name" in f]
+
 
 
 # Helpers for the LinkedIn Profile DOM Scrapper
@@ -3396,208 +3408,116 @@ async def move_by_recruitee_webhook(request: Request):
 # -----------------------------------------
 
 @app.post("/candidates/newCandidateRecruiteeWebhook")
-async def new_candidate_recruitee_webhook(request: Request):
+async def new_candidate_recruitee_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    Handles Recruitee 'new_candidate' webhook events.
-    - Normalizes Recruitee webhook
-    - Fetches candidate details from Recruitee
-    - Scrapes LinkedIn profile (if available)
-    - Evaluates via OpenAI (A–E scoring)
-    - Updates Recruitee with score and explanation
+    Fast webhook for Recruitee → ACK immediately, then process in background.
     """
-
-    # Step 1️⃣ — Parse and normalize incoming webhook JSON
     try:
-        raw_text = (await request.body()).decode("utf-8")
-        logger.info("📩 RAW WEBHOOK BODY: %s", raw_text)
-        data = json.loads(raw_text)
-
-        if "attributes" not in data:
-            data = {"attributes": {"payload": data.get("payload", {}), **data}}
-        logger.info("📦 NORMALIZED PAYLOAD: %s", json.dumps(data, indent=2))
-
+        payload = await request.json()
     except Exception as e:
-        logger.error("❌ Invalid JSON body: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
+        logger.error(f"❌ Invalid JSON body: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Step 2️⃣ — Extract required fields safely
+    # ✅ Instant response to Recruitee
+    background_tasks.add_task(process_new_candidate, payload)
+    return {"status": "accepted"}  # Recruitee sees 200 OK in <100 ms
+
+# BACKGROUND TASK — FULL LOGIC
+
+async def process_new_candidate(payload: dict):
+    """Runs the full candidate evaluation workflow asynchronously."""
     try:
-        attrs = data["attributes"]
-        payload = attrs.get("payload", {})
-        candidate = payload.get("candidate", {})
-        company = payload.get("company", {})
+        logger.info("🚀 Starting background candidate processing...")
+
+        # Normalize payload structure
+        if "attributes" not in payload:
+            payload = {"attributes": {"payload": payload.get("payload", {}), **payload}}
+
+        attrs = payload["attributes"]
+        data = attrs.get("payload", {})
+        candidate = data.get("candidate", {})
+        company = data.get("company", {})
         candidate_id = candidate.get("id")
         company_id = company.get("id")
+
         if not candidate_id or not company_id:
             raise ValueError("Missing candidate_id or company_id")
-    except Exception as e:
-        logger.error("❌ Invalid webhook format: %s", e)
-        raise HTTPException(status_code=400, detail=f"Invalid webhook format: {e}")
 
-    logger.info("🎯 Processing Recruitee candidate_id=%s company_id=%s", candidate_id, company_id)
+        logger.info(f"🎯 Processing candidate_id={candidate_id} company_id={company_id}")
 
+        # Step 1️⃣ — Fetch candidate info from Recruitee
+        candidate_data = await call_recruitee_candidate(candidate_id, company_id)
 
-   # Step 3️⃣ — Fetch candidate info from Recruitee
-    candidate_data = await call_recruitee_candidate(candidate_id, company_id)
-
-    # === NEW: Fetch & extract CV text from cv_url ===
-    cv_url = candidate_data.get("candidate", {}).get("cv_url")
-    cv_text, cv_meta = None, {}
-    if cv_url:
-        try:
-            cv_text, cv_meta = await fetch_and_extract_cv_text(cv_url)
-            # Optional: keep only first N chars to control token use
-            max_chars = int(os.getenv("CV_TEXT_MAX_CHARS", "120000"))  # ~120k chars ≈ ~80k tokens rough upper bound
-            if cv_text and len(cv_text) > max_chars:
-                cv_meta = {**cv_meta, "truncated": True, "orig_len": len(cv_text)}
-                cv_text = cv_text[:max_chars]
-            preview = (cv_text or "")[:1200].replace("\n", " ")  # tiny log preview
-            logger.info("📄 CV extraction: mime=%s pages=%s bytes=%s text_len=%s preview=%s",
-                        cv_meta.get("mime"), cv_meta.get("pages"), cv_meta.get("bytes"),
-                        len(cv_text or ""), preview)
-        except Exception as e:
-            logger.warning("⚠️ CV text extraction failed: %s", e)
-    else:
-        logger.info("ℹ️ Candidate has no cv_url")
-    
-    # 🧠 Extract LinkedIn URL from social links
-    linkedin_url = None
-    social_links = candidate_data["candidate"].get("social_links", [])
-    if social_links:
-        linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
-    
-    scraped_linkedin_content = None
-    if linkedin_url:
-        logger.info(f"🔍 Found LinkedIn URL: {linkedin_url}")
-        try:
-            # Prepare base URL dynamically
-            service_base = os.getenv("SERVICE_BASE_URL")
-            if not service_base:
-                port = os.getenv("PORT", "8000")
-                service_base = f"http://127.0.0.1:{port}"
-    
-            # Call your /scrape-linkedin endpoint
-            async with httpx.AsyncClient() as client:
-                scrape_response = await client.post(
-                    f"{service_base}/scrape-linkedin",
-                    params={"url": linkedin_url},
-                    timeout=150,
+        # Step 2️⃣ — CV extraction and preview logging
+        cv_url = candidate_data.get("candidate", {}).get("cv_url")
+        cv_text, cv_meta = None, {}
+        if cv_url:
+            try:
+                cv_text, cv_meta = await fetch_and_extract_cv_text(cv_url)
+                max_chars = int(os.getenv("CV_TEXT_MAX_CHARS", "120000"))
+                if cv_text and len(cv_text) > max_chars:
+                    cv_meta = {**cv_meta, "truncated": True, "orig_len": len(cv_text)}
+                    cv_text = cv_text[:max_chars]
+                preview = (cv_text or "")[:600].replace("\n", " ")
+                logger.info(
+                    "📄 CV extraction: mime=%s pages=%s bytes=%s text_len=%s preview=%s",
+                    cv_meta.get("mime"),
+                    cv_meta.get("pages"),
+                    cv_meta.get("bytes"),
+                    len(cv_text or ""),
+                    preview,
                 )
-    
-                if scrape_response.status_code == 200:
-                    # Try parsing as JSON, fallback to raw HTML if not JSON
-                    try:
-                        scraped_data = scrape_response.json()
-                        scraped_linkedin_content = scraped_data.get("dom", scraped_data)
-                    except Exception:
-                        scraped_linkedin_content = await scrape_response.aread()
-                        try:
-                            scraped_linkedin_content = scraped_linkedin_content.decode("utf-8", errors="replace")
-                        except Exception:
-                            pass
-    
-                    # ✅ Log truncated sample for quick debugging
-                    preview = str(scraped_linkedin_content)
-                    logger.info("✅ Successfully scraped LinkedIn profile. Sample (truncated): %s", preview[:500])
-    
-                    # 🚨 FULL HTML LOGGING (guarded by env var)
-                    if os.getenv("LOG_FULL_HTML") == "1":
-                            
-                        _scrape_html_logger = logging.getLogger("scrape_html")
-                        if not _scrape_html_logger.handlers:
-                            os.makedirs("logs", exist_ok=True)
-                            _h = RotatingFileHandler("logs/scraped_html.log", maxBytes=50_000_000, backupCount=3)
-                            _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-                            _scrape_html_logger.addHandler(_h)
-                            _scrape_html_logger.setLevel(logging.DEBUG)
-    
-                        html_text = scraped_linkedin_content
-                        if isinstance(html_text, (dict, list)):
-                            html_text = json.dumps(html_text, ensure_ascii=False)
-    
-                        cid = candidate_id or "unknown_candidate"
-                        comp = company_id or "unknown_company"
-                        ts = int(time.time())
-    
-                        _scrape_html_logger.debug(
-                            "candidate_id=%s company_id=%s ts=%s\n%s", cid, comp, ts, html_text
-                        )
-    
-                        # Optional: also log full HTML to main logger
-                        logger.debug(
-                            "🧾 FULL_LINKEDIN_HTML candidate_id=%s company_id=%s ts=%s\n%s",
-                            cid,
-                            comp,
-                            ts,
-                            html_text,
-                        )
-    
-                else:
-                    logger.warning(
-                        f"⚠️ Failed to scrape LinkedIn profile: {scrape_response.status_code} {scrape_response.text}"
-                    )
-    
-        except Exception as e:
-            logger.error("❌ Error calling /scrape-linkedin endpoint: %s", e)
-    else:
-        logger.info("⚠️ No LinkedIn URL found in candidate social links.")
+            except Exception as e:
+                logger.warning(f"⚠️ CV text extraction failed: {e}")
+        else:
+            logger.info("ℹ️ Candidate has no cv_url")
 
-    # === NEW: extract LinkedIn sections we care about ===
-    linkedin_sections = extract_linkedin_sections(scraped_linkedin_content) if scraped_linkedin_content else {}
+        # Step 3️⃣ — LinkedIn scraping (reduced timeout)
+        linkedin_url = None
+        social_links = candidate_data["candidate"].get("social_links", [])
+        if social_links:
+            linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
 
-    # Optional: tiny preview to confirm capture size per section
-    logger.info(
-        "🧩 LinkedIn sections extracted: %s",
-        {k: (len(v) if isinstance(v, list) else (len(v) if v else 0)) for k, v in linkedin_sections.items()}
-    )
+        linkedin_sections = {}
+        if linkedin_url:
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:  # reduced from 150
+                    service_base = os.getenv("SERVICE_BASE_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}")
+                    scrape_resp = await client.post(f"{service_base}/scrape-linkedin", params={"url": linkedin_url})
+                    if scrape_resp.status_code == 200:
+                        dom = scrape_resp.json().get("dom", scrape_resp.json())
+                        linkedin_sections = extract_linkedin_sections(dom)
+                        logger.info("✅ Successfully scraped LinkedIn profile")
+                    else:
+                        logger.warning(f"⚠️ Failed to scrape LinkedIn: {scrape_resp.status_code}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error during LinkedIn scrape: {e}")
+        else:
+            logger.info("⚠️ No LinkedIn URL found for this candidate")
 
-    # Step 4️⃣ — Build structured data for AI evaluation
-    applied_contact_priority = {
-        "Candidate": {
-            "Id": candidate_data["candidate"].get("id"),
-            "Name": candidate_data["candidate"].get("name"),
-            "cv_url": candidate_data["candidate"].get("cv_url"),
-            "cv_text": cv_text,            # <— extracted text (may be None if failed)
-            "cv_meta": cv_meta,            # <— extraction metadata / diagnostics
-            "Source": candidate_data["candidate"].get("source"),
-            "Sources": candidate_data["candidate"].get("sources", []),
-            "Social_links": social_links,
-            "Links": candidate_data["candidate"].get("links", []),
-            "Open_question_answers": candidate_data["candidate"].get("open_question_answers", []),
-            "Grouped_open_questions_answers": candidate_data["candidate"].get("grouped_open_question_answers", []),
-    
-            # === NEW: only the specified LinkedIn sections ===
-            "LinkedIn": {
-                "About": linkedin_sections.get("About"),
-                "Services": linkedin_sections.get("Services"),
-                "Featured": linkedin_sections.get("Featured"),
-                "Experiences": linkedin_sections.get("Experiences"),
-                "Education": linkedin_sections.get("Education"),
-                "Licenses_and_Certifications": linkedin_sections.get("Licenses_and_Certifications"),
-                "Projects": linkedin_sections.get("Projects"),
-                "Volunteering": linkedin_sections.get("Volunteering"),
-                "Skills": linkedin_sections.get("Skills"),
+        # Step 4️⃣ — Build structured AI payload
+        applied_contact_priority = {
+            "Candidate": {
+                "Id": candidate_data["candidate"].get("id"),
+                "Name": candidate_data["candidate"].get("name"),
+                "cv_url": cv_url,
+                "cv_text": cv_text,
+                "cv_meta": cv_meta,
+                "Source": candidate_data["candidate"].get("source"),
+                "Sources": candidate_data["candidate"].get("sources", []),
+                "Social_links": social_links,
+                "Links": candidate_data["candidate"].get("links", []),
+                "Open_question_answers": candidate_data["candidate"].get("open_question_answers", []),
+                "Grouped_open_questions_answers": candidate_data["candidate"].get("grouped_open_question_answers", []),
+                "LinkedIn": linkedin_sections,
             },
-        },
-        "Job_Description": {
-            "id": None,
-            "Title": None,
-            "Description": None,
-            "Requirements": None,
-            "Department": None,
-            "Url": None,
-            "Remote": None,
-            "Hybrid": None,
-            "On_site": None,
-            "Highlight_html": None,
-        },
-    }
-    
-    offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
-    if offers:
-        offer = offers[0]
-        applied_contact_priority["Job_Description"].update(
-            {
+            "Job_Description": {},
+        }
+
+        offers = [r for r in candidate_data.get("references", []) if r.get("type") == "Offer"]
+        if offers:
+            offer = offers[0]
+            applied_contact_priority["Job_Description"] = {
                 "id": offer.get("id"),
                 "Title": offer.get("title"),
                 "Description": offer.get("description"),
@@ -3609,59 +3529,53 @@ async def new_candidate_recruitee_webhook(request: Request):
                 "On_site": offer.get("on_site"),
                 "Highlight_html": offer.get("highlight_html"),
             }
-        )
 
-    # === LOG: Applied Contact Priority ===
-    try:
-        # Pretty-format once to reuse for both logs
-        applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
-    
-        # Console preview (truncate to avoid noisy logs)
-        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "20000"))
-        logger.info(
-            "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
-            len(applied_contact_priority_json),
-            min(len(applied_contact_priority_json), preview_limit),
-            applied_contact_priority_json[:preview_limit],
-        )
-    
-        # Optional full dump to rotating file (set LOG_CONTACT_PRIORITY=1 to enable)
-        if os.getenv("LOG_CONTACT_PRIORITY") == "1":
-            contact_logger = logging.getLogger("contact_priority")
-            if not contact_logger.handlers:
-                os.makedirs("logs", exist_ok=True)
-                handler = RotatingFileHandler("logs/contact_priority.log", maxBytes=50_000_000, backupCount=3)
-                handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-                contact_logger.addHandler(handler)
-                contact_logger.setLevel(logging.DEBUG)
-    
-            contact_logger.debug(
-                "candidate_id=%s company_id=%s len=%d\n%s",
-                candidate_id,
-                company_id,
+        # === LOG: Applied Contact Priority JSON ===
+        try:
+            applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
+            preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "4000"))
+            logger.info(
+                "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
                 len(applied_contact_priority_json),
-                applied_contact_priority_json,
+                min(len(applied_contact_priority_json), preview_limit),
+                applied_contact_priority_json[:preview_limit],
             )
-    
-    except Exception as log_error:
-        logger.warning("⚠️ Failed to log applied_contact_priority: %s", log_error)
+            if os.getenv("LOG_CONTACT_PRIORITY") == "1":
+                contact_logger = logging.getLogger("contact_priority")
+                if not contact_logger.handlers:
+                    os.makedirs("logs", exist_ok=True)
+                    handler = RotatingFileHandler("logs/contact_priority.log", maxBytes=50_000_000, backupCount=3)
+                    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                    contact_logger.addHandler(handler)
+                    contact_logger.setLevel(logging.DEBUG)
+                contact_logger.debug(
+                    "candidate_id=%s company_id=%s len=%d\n%s",
+                    candidate_id,
+                    company_id,
+                    len(applied_contact_priority_json),
+                    applied_contact_priority_json,
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to log applied_contact_priority: {e}")
 
-    
+        # Step 5️⃣ — AI evaluation (reduced timeout)
+        ai_result = await call_openai_evaluation(applied_contact_priority)
+        score = ai_result.get("Scoring", "N/A")
+        explanation = ai_result.get("Score_Explanation", "No explanation returned.")
 
-    # Step 5️⃣ — Evaluate via OpenAI (A–E scoring)
-    ai_result = await call_openai_evaluation(applied_contact_priority)
-    score = ai_result.get("Scoring", "N/A")
-    explanation = ai_result.get("Score_Explanation", "No explanation returned.")
+        # Step 6️⃣ — Prevent duplicate updates
+        existing = await get_existing_custom_fields(company_id, candidate_id)
+        if "Contact Priority (AI-GPT)" in existing:
+            logger.info(f"ℹ️ Candidate {candidate_id} already has AI-GPT field — skipping update.")
+        else:
+            await update_recruitee_custom_fields(company_id, candidate_id, score, explanation)
+            logger.info(f"✅ Updated Recruitee custom fields for candidate {candidate_id}")
 
-    # Step 6️⃣ — Update Recruitee with AI results
-    await update_recruitee_custom_fields(company_id, candidate_id, score, explanation)
+        logger.info(f"🎉 Finished processing candidate {candidate_id} — Score: {score}")
 
-    # Step 7️⃣ — Return enriched response
-    applied_contact_priority["Candidate"]["Scoring"] = score
-    applied_contact_priority["Candidate"]["Score_Explanation"] = explanation
-    applied_contact_priority["Status"] = "Fields updated successfully in Recruitee"
+    except Exception as e:
+        logger.exception(f"❌ Error in background candidate processing: {e}")
 
-    return applied_contact_priority
 
 
 
