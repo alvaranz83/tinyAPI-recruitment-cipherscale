@@ -3617,7 +3617,7 @@ async def new_candidate_recruitee_webhook(request: Request):
         applied_contact_priority_json = json.dumps(applied_contact_priority, ensure_ascii=False, indent=2)
     
         # Console preview (truncate to avoid noisy logs)
-        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "4000"))
+        preview_limit = int(os.getenv("CONTACT_PRIORITY_PREVIEW_CHARS", "10000"))
         logger.info(
             "📦 Applied Contact Priority object (len=%d, showing first %d chars):\n%s",
             len(applied_contact_priority_json),
