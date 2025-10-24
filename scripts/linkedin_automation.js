@@ -184,22 +184,27 @@ export async function scrapePage(url) {
       await page.keyboard.press("Enter");
     }
   
-    // ✅ Reliable login confirmation — LinkedIn top nav bar check
-    logWithTime("Waiting for login confirmation (global-nav)...", "🔄");
-  
-    await page.waitForFunction(() => {
-      const nav = document.querySelector(".global-nav__content");
-      if (!nav) return false;
-  
-      const primaryItems = nav.querySelectorAll(".global-nav__primary-item");
-      // Logged-in LinkedIn has between 6 and 8 main nav items
-      return primaryItems.length >= 6 && primaryItems.length <= 8;
-    }, { timeout: 30000 });
-  
-    logWithTime("✅ Login confirmed — LinkedIn global-nav detected (6–8 items).", "🎉");
-  } catch (err) {
-    logWithTime(`⚠️ Login skipped or failed: ${err.message}`, "⚠️");
-  }
+    // ✅ Reliable login confirmation — handles Authwall redirect to /feed
+    logWithTime("Waiting for login confirmation (Authwall flow)...", "🔄");
+    
+    await Promise.race([
+      // Case 1: Redirected to LinkedIn feed after login
+      page.waitForFunction(
+        () => window.location.href.includes("linkedin.com/feed"),
+        { timeout: 30000 }
+      ),
+    
+      // Case 2: Global nav appears (user dashboard loaded)
+      page.waitForFunction(() => {
+        const nav = document.querySelector(".global-nav__content");
+        if (!nav) return false;
+        const primaryItems = nav.querySelectorAll(".global-nav__primary-item");
+        return primaryItems.length >= 6 && primaryItems.length <= 8;
+      }, { timeout: 30000 }),
+    ]);
+    
+    logWithTime("🎉 Login confirmed — redirected to LinkedIn feed or nav detected.", "🎉");
+
 
 
   // 5️⃣ Ensure full DOM loaded
