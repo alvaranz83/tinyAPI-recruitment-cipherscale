@@ -92,13 +92,12 @@ export async function scrapePage(url) {
     logWithTime(`Error finding/clicking 'Sign in': ${err.message}`, "⚠️");
   }
 
-
   // 4️⃣ Attempt login
   try {
     logWithTime("Waiting for email input...", "⌛");
     await page.waitForSelector(
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
-      { timeout: 8000 }
+      { timeout: 12000 }
     );
   
     logWithTime("Typing email...", "📧");
@@ -111,7 +110,7 @@ export async function scrapePage(url) {
     logWithTime("Waiting for password input...", "🔑");
     await page.waitForSelector(
       "input[type='password'], input[name='session_password'], input[name='password']",
-      { timeout: 8000 }
+      { timeout: 12000 }
     );
   
     logWithTime("Typing password...", "🔒");
@@ -121,36 +120,61 @@ export async function scrapePage(url) {
       { delay: 50 }
     );
   
-    // Detect submit/login button dynamically inside DOM
-    const submitSelector = await page.evaluate(() => {
-      const lower = (t) => t?.toLowerCase() || "";
+    // 🧠 Known submit buttons (LinkedIn changes this often)
+    const submitSelectors = [
+      "button.sign-in-form__submit-btn--full-width",
+      "button[data-id='sign-in-form__submit-btn']",
+      "#join-form-submit", // legacy
+      ".btn-primary.sign-in-form__submit-btn--full-width"
+    ];
   
-      const buttons = Array.from(document.querySelectorAll("button, input[type='submit']"));
-      for (const btn of buttons) {
-        const text = lower(btn.textContent);
-        const id = lower(btn.id);
-        const type = lower(btn.getAttribute("type"));
+    let submitSelector = null;
   
-        if (
-          text.includes("sign in") ||
-          text.includes("log in") ||
-          id.includes("login") ||
-          id.includes("signin") ||
-          type === "submit"
-        ) {
-          if (btn.id) return `#${btn.id}`;
-          if (btn.className) return `button.${btn.className.trim().replace(/\s+/g, ".")}`;
-          return "button[type='submit']";
-        }
+    // Wait until *any* of these appear
+    for (const sel of submitSelectors) {
+      try {
+        await page.waitForSelector(sel, { timeout: 5000, visible: true });
+        submitSelector = sel;
+        break;
+      } catch {
+        continue;
       }
-      return null;
-    });
+    }
   
     if (submitSelector) {
-      logWithTime(`Submitting login form using: ${submitSelector}`, "🚀");
-      await page.click(submitSelector);
+      logWithTime(`Submitting login form using selector: ${submitSelector}`, "🚀");
+  
+      // Ensure the element is interactable
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, submitSelector);
+  
+      // Double-check that the element is attached & visible
+      await page.waitForFunction(
+        (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        },
+        { timeout: 8000 },
+        submitSelector
+      );
+  
+      // Try safe click first, fallback to JS click
+      try {
+        await page.click(submitSelector, { delay: 100 });
+        logWithTime("Clicked 'Sign in' submit button successfully", "✅");
+      } catch (clickErr) {
+        logWithTime(`⚠️ Click failed (${clickErr.message}), retrying via JS click`, "🛠️");
+        await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (el) el.click();
+        }, submitSelector);
+      }
     } else {
-      logWithTime("No submit button found — pressing Enter", "⚠️");
+      logWithTime("⚠️ No visible submit button found — pressing Enter", "⚠️");
       await page.keyboard.press("Enter");
     }
   
