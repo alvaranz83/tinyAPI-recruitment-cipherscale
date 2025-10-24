@@ -77,19 +77,22 @@ export async function scrapePage(url) {
           });
         }
   
-        // Wait for either the navigation or the login form to appear
-        logWithTime("⏳ Waiting for Sign-in form or navigation...", "⌛");
+        // Wait for either navigation or the real Authwall sign-in form to appear
+        logWithTime("⏳ Waiting for Authwall Sign-in form or navigation...", "⌛");
         await Promise.race([
           page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }),
-          page.waitForSelector("form.sign-in-form", { timeout: 20000 }),
+          page.waitForSelector('form[data-id="sign-in-form"], form.authwall-sign-in-form__body', {
+            timeout: 20000,
+            visible: true,
+          }),
         ]);
   
         // Confirm login form presence
-        const signInForm = await page.$("form.sign-in-form");
+        const signInForm = await page.$('form[data-id="sign-in-form"], form.authwall-sign-in-form__body');
         if (signInForm) {
-          logWithTime("🎉 Sign-in form detected — ready for credential input.", "🎉");
+          logWithTime("🎉 Authwall Sign-in form detected — ready for credential input.", "🎉");
         } else {
-          logWithTime("⚠️ Could not detect sign-in form after click.", "⚠️");
+          logWithTime("⚠️ Could not detect Authwall Sign-in form after click.", "⚠️");
         }
       }
     } else {
