@@ -3472,26 +3472,58 @@ async def process_new_candidate(payload: dict):
         else:
             logger.info("ℹ️ Candidate has no cv_url")
 
-        # Step 3️⃣ — LinkedIn scraping (reduced timeout)
-        linkedin_url = None
-        social_links = candidate_data["candidate"].get("social_links", [])
-        if social_links:
-            linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
-
+        # Step 3️⃣ — LinkedIn scraping (run local Puppeteer script and stream logs)
         linkedin_sections = {}
+        social_links = candidate_data["candidate"].get("social_links", [])
+        linkedin_url = next((link for link in social_links if "linkedin.com" in link.lower()), None)
+
         if linkedin_url:
+            logger.info(f"🔍 Found LinkedIn URL: {linkedin_url}")
             try:
-                async with httpx.AsyncClient(timeout=30) as client:  # reduced from 150
-                    service_base = os.getenv("SERVICE_BASE_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}")
-                    scrape_resp = await client.post(f"{service_base}/scrape-linkedin", params={"url": linkedin_url})
-                    if scrape_resp.status_code == 200:
-                        dom = scrape_resp.json().get("dom", scrape_resp.json())
-                        linkedin_sections = extract_linkedin_sections(dom)
-                        logger.info("✅ Successfully scraped LinkedIn profile")
-                    else:
-                        logger.warning(f"⚠️ Failed to scrape LinkedIn: {scrape_resp.status_code}")
+                process = await asyncio.create_subprocess_exec(
+                    "node", "scripts/linkedin_automation.js", linkedin_url,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env={
+                        **os.environ,
+                        "LINKEDIN_EMAIL": os.getenv("LINKEDIN_EMAIL"),
+                        "LINKEDIN_PASSWORD": os.getenv("LINKEDIN_PASSWORD"),
+                    },
+                )
+
+                stdout_lines, stderr_lines = [], []
+
+                async def read_stream(stream, buffer, level=logging.INFO):
+                    async for line in stream:
+                        decoded = line.decode().rstrip()
+                        buffer.append(decoded)
+                        logger.log(level, f"🧩 Puppeteer: {decoded}")
+
+                # Stream logs live from Puppeteer
+                await asyncio.gather(
+                    read_stream(process.stdout, stdout_lines, logging.INFO),
+                    read_stream(process.stderr, stderr_lines, logging.ERROR),
+                )
+                await process.wait()
+
+                full_stdout = "\n".join(stdout_lines)
+                if process.returncode != 0:
+                    logger.warning(f"⚠️ Puppeteer returned non-zero exit code: {process.returncode}")
+
+                # Extract JSON from Puppeteer output
+                match = re.search(r"###DOM_JSON###(.*)", full_stdout, re.DOTALL)
+                if match:
+                    try:
+                        dom_json = json.loads(match.group(1))
+                        linkedin_sections = extract_linkedin_sections(dom_json)
+                        logger.info("✅ Successfully extracted LinkedIn sections")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to parse LinkedIn DOM JSON: {e}")
+                else:
+                    logger.warning("⚠️ No ###DOM_JSON### marker found in Puppeteer output")
+
             except Exception as e:
-                logger.warning(f"⚠️ Error during LinkedIn scrape: {e}")
+                logger.error(f"❌ Error running Puppeteer scraper: {e}")
         else:
             logger.info("⚠️ No LinkedIn URL found for this candidate")
 
@@ -3575,6 +3607,7 @@ async def process_new_candidate(payload: dict):
 
     except Exception as e:
         logger.exception(f"❌ Error in background candidate processing: {e}")
+
 
 
 
