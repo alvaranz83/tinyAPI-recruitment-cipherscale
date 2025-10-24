@@ -36,27 +36,69 @@ export async function scrapePage(url) {
   }
 
   
-  // 3️⃣ Detect and open the real Sign-In form (not Join form)
+ // 3️⃣ Handle LinkedIn AUTHWALL — open the real "Sign In" form
   try {
-    const isAuthWall = await page.$(".authwall-join-form__form-toggle--bottom.form-toggle");
-    if (isAuthWall) {
-      logWithTime("Found auth wall — clicking toggle to open sign-in form...", "🪟");
-      await page.click(".authwall-join-form__form-toggle--bottom.form-toggle");
-      await page.waitForSelector("form.sign-in-form", { timeout: 10000 });
-      logWithTime("Sign-in form opened from auth wall", "✅");
-    }
+    const currentUrl = page.url();
+    logWithTime(`Checking current URL: ${currentUrl}`, "🔍");
   
-    // Also check for top-right header login button
-    const headerSignIn = await page.$(".nav__button-secondary.btn-primary.btn-md");
-    if (headerSignIn) {
-      logWithTime("Found header 'Sign in' button — clicking...", "🖱️");
-      await headerSignIn.click();
-      await page.waitForSelector("form.sign-in-form", { timeout: 10000 });
-      logWithTime("Sign-in form opened", "✅");
+    // ✅ Only proceed if we’re on the LinkedIn Authwall
+    if (currentUrl.includes("linkedin.com/authwall")) {
+      logWithTime("Detected LinkedIn AUTHWALL page — restricted content view.", "🚪");
+  
+      // Wait for the "Sign in" button to appear and become visible
+      await page.waitForSelector(".authwall-join-form__form-toggle--bottom.form-toggle", {
+        timeout: 15000,
+        visible: true,
+      });
+  
+      const authWallButton = await page.$(".authwall-join-form__form-toggle--bottom.form-toggle");
+      if (!authWallButton) {
+        logWithTime("⚠️ Could not find Authwall 'Sign in' button.", "⚠️");
+      } else {
+        logWithTime("🖱️ Found Authwall 'Sign in' button — preparing to click.", "🖱️");
+  
+        // Scroll into view before clicking
+        await authWallButton.evaluate((el) =>
+          el.scrollIntoView({ behavior: "smooth", block: "center" })
+        );
+  
+        // Attempt click, with JS fallback if necessary
+        try {
+          await authWallButton.click({ delay: 100 });
+          logWithTime("✅ Clicked Authwall 'Sign in' button successfully.", "✅");
+        } catch (clickErr) {
+          logWithTime(
+            `⚠️ Click failed (${clickErr.message}) — retrying via JS click.`,
+            "🛠️"
+          );
+          await page.evaluate(() => {
+            const el = document.querySelector(".authwall-join-form__form-toggle--bottom.form-toggle");
+            if (el) el.click();
+          });
+        }
+  
+        // Wait for either the navigation or the login form to appear
+        logWithTime("⏳ Waiting for Sign-in form or navigation...", "⌛");
+        await Promise.race([
+          page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }),
+          page.waitForSelector("form.sign-in-form", { timeout: 20000 }),
+        ]);
+  
+        // Confirm login form presence
+        const signInForm = await page.$("form.sign-in-form");
+        if (signInForm) {
+          logWithTime("🎉 Sign-in form detected — ready for credential input.", "🎉");
+        } else {
+          logWithTime("⚠️ Could not detect sign-in form after click.", "⚠️");
+        }
+      }
+    } else {
+      logWithTime("ℹ️ Not on an AUTHWALL page — skipping this step.", "ℹ️");
     }
   } catch (err) {
-    logWithTime(`Error opening sign-in form: ${err.message}`, "⚠️");
+    logWithTime(`❌ Error handling Authwall login: ${err.message}`, "❌");
   }
+  
 
 
   // 4️⃣ Attempt login
