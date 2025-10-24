@@ -97,7 +97,7 @@ export async function scrapePage(url) {
     logWithTime("Waiting for email input...", "⌛");
     await page.waitForSelector(
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
-      { timeout: 12000 }
+      { timeout: 15000 }
     );
   
     logWithTime("Typing email...", "📧");
@@ -110,7 +110,7 @@ export async function scrapePage(url) {
     logWithTime("Waiting for password input...", "🔑");
     await page.waitForSelector(
       "input[type='password'], input[name='session_password'], input[name='password']",
-      { timeout: 12000 }
+      { timeout: 15000 }
     );
   
     logWithTime("Typing password...", "🔒");
@@ -141,7 +141,6 @@ export async function scrapePage(url) {
   
     if (submitSelector) {
       logWithTime(`Submitting login form using selector: ${submitSelector}`, "🚀");
-  
       await page.evaluate((sel) => {
         const el = document.querySelector(sel);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -173,19 +172,19 @@ export async function scrapePage(url) {
       await page.keyboard.press("Enter");
     }
   
-    // ✅ Instead of waiting for full navigation, wait until modal disappears or user UI loads
-    logWithTime("Waiting for login confirmation...", "🔄");
-    await Promise.race([
-      page.waitForSelector(".global-nav__me-photo, .feed-identity-module, .share-box-feed-entry", {
-        timeout: 20000,
-      }), // Logged-in feed/header appears
-      page.waitForFunction(
-        () => !document.querySelector(".sign-in-form__submit-btn--full-width"),
-        { timeout: 20000 }
-      ), // Modal closed
-    ]);
+    // ✅ Reliable login confirmation — LinkedIn top nav bar check
+    logWithTime("Waiting for login confirmation (global-nav)...", "🔄");
   
-    logWithTime("✅ Login confirmed — user interface detected.", "🎉");
+    await page.waitForFunction(() => {
+      const nav = document.querySelector(".global-nav__content");
+      if (!nav) return false;
+  
+      const primaryItems = nav.querySelectorAll(".global-nav__primary-item");
+      // Logged-in LinkedIn has between 6 and 8 main nav items
+      return primaryItems.length >= 6 && primaryItems.length <= 8;
+    }, { timeout: 30000 });
+  
+    logWithTime("✅ Login confirmed — LinkedIn global-nav detected (6–8 items).", "🎉");
   } catch (err) {
     logWithTime(`⚠️ Login skipped or failed: ${err.message}`, "⚠️");
   }
