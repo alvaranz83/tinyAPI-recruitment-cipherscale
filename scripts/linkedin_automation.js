@@ -37,15 +37,23 @@ export async function scrapePage(url) {
 
   // 3️⃣ Look for "Sign in" / "Log in" button
   try {
-    // Run DOM logic inside the page to locate clickable login links/buttons
     const signInSelector = await page.evaluate(() => {
       const lower = (t) => t?.toLowerCase() || "";
-  
       const links = Array.from(document.querySelectorAll("a, button"));
+  
+      // Priority known LinkedIn cases
+      const modalButton = document.querySelector(".sign-in-modal");
+      if (modalButton) return ".sign-in-modal";
+  
+      const headerButton = document.querySelector(".nav__button-secondary.btn-primary.btn-md");
+      if (headerButton) return ".nav__button-secondary.btn-primary.btn-md";
+  
+      // Fallback generic detection
       for (const el of links) {
         const text = lower(el.textContent);
         const href = lower(el.getAttribute("href"));
         const id = lower(el.id);
+        const cls = lower(el.className);
   
         if (
           text.includes("sign in") ||
@@ -53,21 +61,28 @@ export async function scrapePage(url) {
           href?.includes("login") ||
           href?.includes("signin") ||
           id?.includes("login") ||
-          id?.includes("signin")
+          id?.includes("signin") ||
+          cls?.includes("sign-in")
         ) {
-          return {
-            selector: el.tagName.toLowerCase() === "a"
-              ? "a[href='" + el.getAttribute("href") + "']"
-              : "#" + (el.id || el.className.replace(/\s+/g, ".")),
-          };
+          // Choose safest selector available
+          if (el.id) return `#${el.id}`;
+          if (el.className) {
+            const safeClass = "." + el.className.trim().split(/\s+/).join(".");
+            return `${el.tagName.toLowerCase()}${safeClass}`;
+          }
+          if (el.getAttribute("href")) return `a[href='${el.getAttribute("href")}']`;
         }
       }
       return null;
     });
   
-    if (signInSelector && signInSelector.selector) {
-      logWithTime(`Found 'Sign in' element: ${signInSelector.selector}`, "🖱️");
-      await page.click(signInSelector.selector);
+    if (signInSelector) {
+      logWithTime(`Found 'Sign in' element: ${signInSelector}`, "🖱️");
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, signInSelector);
+      await page.click(signInSelector, { delay: 100 });
       await new Promise((r) => setTimeout(r, 4000));
       logWithTime("Clicked 'Sign in' and waited 4s", "⏱️");
     } else {
