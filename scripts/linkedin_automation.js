@@ -37,16 +37,37 @@ export async function scrapePage(url) {
 
   // 3️⃣ Look for "Sign in" / "Log in" button
   try {
-    const signInButton = await page.$x(
-      "//a[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in') or " +
-        "contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in') or " +
-        "contains(translate(@href,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'login') or " +
-        "contains(translate(@href,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'signin') or " +
-        "contains(@id,'login') or contains(@id,'signin')]"
-    );
-    if (signInButton.length > 0) {
-      logWithTime("Found 'Sign in' button, clicking...", "🖱️");
-      await signInButton[0].click();
+    // Run DOM logic inside the page to locate clickable login links/buttons
+    const signInSelector = await page.evaluate(() => {
+      const lower = (t) => t?.toLowerCase() || "";
+  
+      const links = Array.from(document.querySelectorAll("a, button"));
+      for (const el of links) {
+        const text = lower(el.textContent);
+        const href = lower(el.getAttribute("href"));
+        const id = lower(el.id);
+  
+        if (
+          text.includes("sign in") ||
+          text.includes("log in") ||
+          href?.includes("login") ||
+          href?.includes("signin") ||
+          id?.includes("login") ||
+          id?.includes("signin")
+        ) {
+          return {
+            selector: el.tagName.toLowerCase() === "a"
+              ? "a[href='" + el.getAttribute("href") + "']"
+              : "#" + (el.id || el.className.replace(/\s+/g, ".")),
+          };
+        }
+      }
+      return null;
+    });
+  
+    if (signInSelector && signInSelector.selector) {
+      logWithTime(`Found 'Sign in' element: ${signInSelector.selector}`, "🖱️");
+      await page.click(signInSelector.selector);
       await new Promise((r) => setTimeout(r, 4000));
       logWithTime("Clicked 'Sign in' and waited 4s", "⏱️");
     } else {
@@ -56,6 +77,7 @@ export async function scrapePage(url) {
     logWithTime(`Error finding/clicking 'Sign in': ${err.message}`, "⚠️");
   }
 
+
   // 4️⃣ Attempt login
   try {
     logWithTime("Waiting for email input...", "⌛");
@@ -63,45 +85,67 @@ export async function scrapePage(url) {
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
       { timeout: 8000 }
     );
+  
     logWithTime("Typing email...", "📧");
     await page.type(
       "input[type='email'], input[name='session_key'], input[name='username'], input[name='email']",
       username,
       { delay: 50 }
     );
-
+  
     logWithTime("Waiting for password input...", "🔑");
     await page.waitForSelector(
       "input[type='password'], input[name='session_password'], input[name='password']",
       { timeout: 8000 }
     );
+  
     logWithTime("Typing password...", "🔒");
     await page.type(
       "input[type='password'], input[name='session_password'], input[name='password']",
       password,
       { delay: 50 }
     );
-
-    const submitButton = await page.$x(
-      "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'sign in') or " +
-        "contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'log in') or " +
-        "contains(@type,'submit') or contains(@id,'login')]"
-    );
-
-    if (submitButton.length > 0) {
-      logWithTime("Submitting login form...", "🚀");
-      await submitButton[0].click();
+  
+    // Detect submit/login button dynamically inside DOM
+    const submitSelector = await page.evaluate(() => {
+      const lower = (t) => t?.toLowerCase() || "";
+  
+      const buttons = Array.from(document.querySelectorAll("button, input[type='submit']"));
+      for (const btn of buttons) {
+        const text = lower(btn.textContent);
+        const id = lower(btn.id);
+        const type = lower(btn.getAttribute("type"));
+  
+        if (
+          text.includes("sign in") ||
+          text.includes("log in") ||
+          id.includes("login") ||
+          id.includes("signin") ||
+          type === "submit"
+        ) {
+          if (btn.id) return `#${btn.id}`;
+          if (btn.className) return `button.${btn.className.trim().replace(/\s+/g, ".")}`;
+          return "button[type='submit']";
+        }
+      }
+      return null;
+    });
+  
+    if (submitSelector) {
+      logWithTime(`Submitting login form using: ${submitSelector}`, "🚀");
+      await page.click(submitSelector);
     } else {
       logWithTime("No submit button found — pressing Enter", "⚠️");
       await page.keyboard.press("Enter");
     }
-
+  
     logWithTime("Waiting for post-login navigation...", "🔄");
     await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
     logWithTime("✅ Login successful or redirected.", "✅");
   } catch (err) {
     logWithTime(`Login skipped or failed: ${err.message}`, "⚠️");
   }
+
 
   // 5️⃣ Ensure full DOM loaded
   logWithTime("Waiting 3s for DOM to stabilize...", "⏳");
