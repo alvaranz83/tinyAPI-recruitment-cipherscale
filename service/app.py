@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Que
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Iterable, Tuple, Union
-import os, json, textwrap, re, uuid, logging, io, httpx, time, random, requests, subprocess
+import os, json, textwrap, re, uuid, logging, io, httpx, time, random, requests, subprocess, asyncio
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload 
@@ -4149,35 +4149,61 @@ async def list_recruitee_candidates(
 
 @app.post("/scrape-linkedin")
 async def scrape_linkedin(url: str = Query(..., description="LinkedIn URL to visit")):
-    """Calls Puppeteer script to login and extract the full DOM."""
+    """Runs Puppeteer LinkedIn scraper and streams logs to server."""
     try:
-        result = subprocess.run(
-            ["node", "scripts/linkedin_automation.js", url],
-            capture_output=True,
-            text=True,
-            timeout=150,
+        logger.info(f"🌐 Starting Puppeteer scrape for URL: {url}")
+
+        # Launch Puppeteer script as subprocess
+        process = await asyncio.create_subprocess_exec(
+            "node", "scripts/linkedin_automation.js", url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             env={
                 **os.environ,
                 "LINKEDIN_EMAIL": os.getenv("LINKEDIN_EMAIL"),
                 "LINKEDIN_PASSWORD": os.getenv("LINKEDIN_PASSWORD"),
-            },
+            }
         )
 
-        if result.returncode != 0:
-            raise Exception(result.stderr or "Puppeteer failed")
+        stdout_lines = []
+        stderr_lines = []
 
-        # Look for the JSON marker
-        match = re.search(r"###DOM_JSON###(.*)", result.stdout, re.DOTALL)
+        async def read_stream(stream, buffer, level=logging.INFO):
+            async for line in stream:
+                decoded = line.decode().rstrip()
+                buffer.append(decoded)
+                logger.log(level, f"🧩 Puppeteer: {decoded}")
+
+        # Read both stdout and stderr concurrently
+        await asyncio.gather(
+            read_stream(process.stdout, stdout_lines, logging.INFO),
+            read_stream(process.stderr, stderr_lines, logging.ERROR)
+        )
+
+        await process.wait()
+
+        full_stdout = "\n".join(stdout_lines)
+        if process.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Puppeteer failed: {process.returncode}")
+
+        # Extract DOM JSON if present
+        match = re.search(r"###DOM_JSON###(.*)", full_stdout, re.DOTALL)
         if match:
-            dom_json = json.loads(match.group(1))
+            try:
+                dom_json = json.loads(match.group(1))
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse DOM JSON: {e}")
+                dom_json = {"raw_output": match.group(1)[:500]}
         else:
-            dom_json = {"raw_output": result.stdout}
+            dom_json = {"raw_output": full_stdout}
 
+        logger.info("✅ Puppeteer finished successfully")
         return {"status": "success", "url": url, "dom": dom_json}
 
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="Puppeteer timed out")
     except Exception as e:
+        logger.exception(f"❌ Error running Puppeteer: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
