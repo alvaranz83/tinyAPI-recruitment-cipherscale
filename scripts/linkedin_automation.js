@@ -35,62 +35,29 @@ export async function scrapePage(url) {
     logWithTime(`Error loading page: ${err.message}`, "❌");
   }
 
-  // 3️⃣ Look for "Sign in" / "Log in" button
+  
+  // 3️⃣ Detect and open the real Sign-In form (not Join form)
   try {
-    const signInSelector = await page.evaluate(() => {
-      const lower = (t) => t?.toLowerCase() || "";
-      const links = Array.from(document.querySelectorAll("a, button"));
+    const isAuthWall = await page.$(".authwall-join-form__form-toggle--bottom.form-toggle");
+    if (isAuthWall) {
+      logWithTime("Found auth wall — clicking toggle to open sign-in form...", "🪟");
+      await page.click(".authwall-join-form__form-toggle--bottom.form-toggle");
+      await page.waitForSelector("form.sign-in-form", { timeout: 10000 });
+      logWithTime("Sign-in form opened from auth wall", "✅");
+    }
   
-      // Priority known LinkedIn cases
-      const modalButton = document.querySelector(".sign-in-modal");
-      if (modalButton) return ".sign-in-modal";
-  
-      const headerButton = document.querySelector(".nav__button-secondary.btn-primary.btn-md");
-      if (headerButton) return ".nav__button-secondary.btn-primary.btn-md";
-  
-      // Fallback generic detection
-      for (const el of links) {
-        const text = lower(el.textContent);
-        const href = lower(el.getAttribute("href"));
-        const id = lower(el.id);
-        const cls = lower(el.className);
-  
-        if (
-          text.includes("sign in") ||
-          text.includes("log in") ||
-          href?.includes("login") ||
-          href?.includes("signin") ||
-          id?.includes("login") ||
-          id?.includes("signin") ||
-          cls?.includes("sign-in")
-        ) {
-          // Choose safest selector available
-          if (el.id) return `#${el.id}`;
-          if (el.className) {
-            const safeClass = "." + el.className.trim().split(/\s+/).join(".");
-            return `${el.tagName.toLowerCase()}${safeClass}`;
-          }
-          if (el.getAttribute("href")) return `a[href='${el.getAttribute("href")}']`;
-        }
-      }
-      return null;
-    });
-  
-    if (signInSelector) {
-      logWithTime(`Found 'Sign in' element: ${signInSelector}`, "🖱️");
-      await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, signInSelector);
-      await page.click(signInSelector, { delay: 100 });
-      await new Promise((r) => setTimeout(r, 4000));
-      logWithTime("Clicked 'Sign in' and waited 4s", "⏱️");
-    } else {
-      logWithTime("No 'Sign in' button found — maybe already on login page", "⚠️");
+    // Also check for top-right header login button
+    const headerSignIn = await page.$(".nav__button-secondary.btn-primary.btn-md");
+    if (headerSignIn) {
+      logWithTime("Found header 'Sign in' button — clicking...", "🖱️");
+      await headerSignIn.click();
+      await page.waitForSelector("form.sign-in-form", { timeout: 10000 });
+      logWithTime("Sign-in form opened", "✅");
     }
   } catch (err) {
-    logWithTime(`Error finding/clicking 'Sign in': ${err.message}`, "⚠️");
+    logWithTime(`Error opening sign-in form: ${err.message}`, "⚠️");
   }
+
 
   // 4️⃣ Attempt login
   try {
