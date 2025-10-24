@@ -120,17 +120,15 @@ export async function scrapePage(url) {
       { delay: 50 }
     );
   
-    // 🧠 Known submit buttons (LinkedIn changes this often)
+    // 🧠 Known submit button selectors
     const submitSelectors = [
       "button.sign-in-form__submit-btn--full-width",
       "button[data-id='sign-in-form__submit-btn']",
-      "#join-form-submit", // legacy
+      "#join-form-submit",
       ".btn-primary.sign-in-form__submit-btn--full-width"
     ];
   
     let submitSelector = null;
-  
-    // Wait until *any* of these appear
     for (const sel of submitSelectors) {
       try {
         await page.waitForSelector(sel, { timeout: 5000, visible: true });
@@ -144,13 +142,11 @@ export async function scrapePage(url) {
     if (submitSelector) {
       logWithTime(`Submitting login form using selector: ${submitSelector}`, "🚀");
   
-      // Ensure the element is interactable
       await page.evaluate((sel) => {
         const el = document.querySelector(sel);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
       }, submitSelector);
   
-      // Double-check that the element is attached & visible
       await page.waitForFunction(
         (sel) => {
           const el = document.querySelector(sel);
@@ -162,7 +158,6 @@ export async function scrapePage(url) {
         submitSelector
       );
   
-      // Try safe click first, fallback to JS click
       try {
         await page.click(submitSelector, { delay: 100 });
         logWithTime("Clicked 'Sign in' submit button successfully", "✅");
@@ -178,11 +173,21 @@ export async function scrapePage(url) {
       await page.keyboard.press("Enter");
     }
   
-    logWithTime("Waiting for post-login navigation...", "🔄");
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
-    logWithTime("✅ Login successful or redirected.", "✅");
+    // ✅ Instead of waiting for full navigation, wait until modal disappears or user UI loads
+    logWithTime("Waiting for login confirmation...", "🔄");
+    await Promise.race([
+      page.waitForSelector(".global-nav__me-photo, .feed-identity-module, .share-box-feed-entry", {
+        timeout: 20000,
+      }), // Logged-in feed/header appears
+      page.waitForFunction(
+        () => !document.querySelector(".sign-in-form__submit-btn--full-width"),
+        { timeout: 20000 }
+      ), // Modal closed
+    ]);
+  
+    logWithTime("✅ Login confirmed — user interface detected.", "🎉");
   } catch (err) {
-    logWithTime(`Login skipped or failed: ${err.message}`, "⚠️");
+    logWithTime(`⚠️ Login skipped or failed: ${err.message}`, "⚠️");
   }
 
 
